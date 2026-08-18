@@ -1,0 +1,10 @@
+{
+  "name": "pi-workbench",
+  "version": "0.3.0",
+  "description": "A preference-aware Pi workbench for planning, research, delegated implementation, verification, and trusted skill evolution.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test tests"
+  }
+}

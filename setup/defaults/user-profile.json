@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "preferences": [
+    {
+      "id": "preference-aware-capability-system",
+      "statement": "Treat Pi as a preference-aware capability system: understand the desired outcome from the user's explanations and dynamically compose the relevant installed skills instead of treating skills as a static bundle.",
+      "context": "The user explicitly clarified that Pi should use the concepts and capabilities, not merely install global skill files.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "embed-means-conceptual-synthesis",
+      "statement": "When the user asks to embed linked material, synthesize its concepts into Pi's behavior unless the user explicitly asks to install or copy the source.",
+      "context": "This corrects an earlier literal interpretation of 'embed'.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "trusted-skill-evolution",
+      "statement": "Continuously adopt new and updated skills from explicitly trusted sources, while staging, validating, backing up, and audit-logging changes; never auto-trust arbitrary third-party sources.",
+      "context": "The user wants Pi to self-update its capabilities while continuing to serve their preferences.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "workflow-orchestration",
+      "statement": "Use Pi-native workflow orchestration for complex multi-step work, with specialist planning, execution, independent review, and observable verification; keep simple work direct.",
+      "context": "The user requested the full functionally named specialist workflow inside Pi.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "pi-visual-language",
+      "statement": "Use a restrained dark Pi interface with line and prompt accents at #FF8A4C; color context pressure green at low usage, yellow at medium usage, and red near the limit.",
+      "context": "Explicit global Pi visual preference.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "use-clear-functional-names-for-pi-ag-msyq60fo",
+      "statement": "Use clear functional names for Pi agents, workflows, and commands; avoid mythological names such as Sisyphus, Prometheus, Atlas, Hephaestus, Metis, and Momus because they are confusing.",
+      "context": "Applies to Pi's global orchestration and user-facing capability system.",
+      "createdAt": "2026-08-18T13:55:16.020Z",
+      "updatedAt": "2026-08-18T13:55:16.020Z"
+    }
+  ]
+}

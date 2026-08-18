@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "enabled": true,
+  "intervalHours": 24,
+  "skillsCliVersion": "1.5.22",
+  "trustedSources": [
+    {
+      "source": "mattpocock/skills",
+      "repository": "https://github.com/mattpocock/skills"
+    },
+    {
+      "source": "emilkowalski/skills",
+      "repository": "https://github.com/emilkowalski/skills"
+    }
+  ],
+  "autoresearchIssuesRepository": "karpathy/autoresearch"
+}

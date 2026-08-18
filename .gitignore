@@ -1,0 +1,24 @@
+# Local and generated files
+.DS_Store
+node_modules/
+.reprompter/
+*.log
+*.tmp
+*.bak
+*.backup-*
+
+# Never publish credentials or provider authentication
+.env
+.env.*
+!.env.example
+*credentials*.json
+*secrets*.json
+*auth*.json
+
+# Pi runtime/session state is intentionally project- or machine-local
+.pi/
+sessions/
+skill-evolution/state.json
+skill-evolution/audit.jsonl
+skill-evolution/backups/
+knowledge/autoresearch-community.md

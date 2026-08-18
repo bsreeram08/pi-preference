@@ -1,0 +1,34 @@
+{
+  "rows": [
+    [
+      "model",
+      "thinking",
+      "git-branch",
+      "git-files",
+      "context-pct",
+      "context-left"
+    ],
+    [
+      "cost",
+      "tokens-in",
+      "tokens-out",
+      "tokens-daily",
+      "tokens-monthly",
+      "session-clock"
+    ]
+  ],
+  "widgets": [
+    "model",
+    "thinking",
+    "git-branch",
+    "git-files",
+    "context-pct",
+    "context-left",
+    "cost",
+    "tokens-in",
+    "tokens-out",
+    "tokens-daily",
+    "tokens-monthly",
+    "session-clock"
+  ]
+}
