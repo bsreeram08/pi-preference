@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — 2026-08-18
+
+- Added native `workbench_memory` and `/memory` with project/global scopes, private per-agent namespaces, shared memory, and a Coordinator-reviewed proposal inbox.
+- Added automatic role-scoped recall to Coordinator and child-agent prompts; child identity is attributed through `PI_WORKBENCH_AGENT`, temporary worktrees and symlinked paths use one canonical project memory root, and all memory state stays outside child workspaces behind direct-access guards.
+- Added immutable per-entry JSON, SHA-256 integrity checks, derivation/supersession links, optional expiry, stale-entry filtering, integrity-checked tombstones, and bounded context injection.
+- Added secret, sensitive-personal-data, prompt-injection, invalid-global-kind, ID, timestamp, and lineage-limit rejection.
+- Added owner-token per-scope process locks, atomic writes, fail-closed abandoned-lock handling, idempotent promotion, and cross-process deduplication.
+- Added focused tests for isolation, proposal/promotion review, global restrictions, safety rejection, tombstones, stale and superseded recall, context bounds, fail-closed lock handling, deduplication, integrity failure, and concurrent processes.
+- Added a portable strict TypeScript check plus stronger main/child RPC installer smoke gates.
+- Documented the memory trust model and the lightweight concepts adapted from `tickernelz/pi-memory` and Semantica; neither project is installed as a runtime dependency.
+
 ## 0.3.0 — 2026-08-18
 
 - Added functionally named Pi workflow roles: Coordinator, Planner, Requirements Analyst, Quality Reviewer, Technical Reviewer, Execution Manager, Implementer, Task Implementer, Codebase Explorer, and Researcher.

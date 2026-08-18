@@ -19,6 +19,7 @@ export interface AgentRunContext {
   groupId?: string;
   groupTitle?: string;
   jobId?: string;
+  memoryProjectRoot?: string;
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -102,8 +103,8 @@ async function runPiAgent(
 
   const researchTools = agent.researchTools ? ["research_search", "research_fetch", "research_browser"] : [];
   const tools = agent.readOnly
-    ? ["read", "grep", "find", "ls", "qmd_search", ...researchTools, ...(agent.allowBash ? ["bash"] : [])]
-    : ["read", "write", "edit", "grep", "find", "ls", "bash", "qmd_search", ...researchTools];
+    ? ["read", "grep", "find", "ls", "qmd_search", "workbench_memory", ...researchTools, ...(agent.allowBash ? ["bash"] : [])]
+    : ["read", "write", "edit", "grep", "find", "ls", "bash", "qmd_search", "workbench_memory", ...researchTools];
   const args = [
     "--mode", "rpc", "--no-session", "--no-extensions", "--extension", CHILD_TOOLS_PATH,
     "--no-prompt-templates", "--append-system-prompt", systemPromptPath,
@@ -173,7 +174,11 @@ async function runPiAgent(
           shell: false,
           detached: process.platform !== "win32",
           stdio: ["pipe", "pipe", "pipe"],
-          env: { ...process.env, PI_WORKBENCH_AGENT: agent.id },
+          env: {
+            ...process.env,
+            PI_WORKBENCH_AGENT: agent.id,
+            PI_WORKBENCH_PROJECT_ROOT: runContext?.memoryProjectRoot ?? projectRoot,
+          },
         });
         activeChild = child;
         let stdoutBuffer = "";

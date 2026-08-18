@@ -1,10 +1,11 @@
 {
   "name": "pi-workbench",
-  "version": "0.3.0",
-  "description": "A preference-aware Pi workbench for planning, research, delegated implementation, verification, and trusted skill evolution.",
+  "version": "0.4.0",
+  "description": "A preference-aware Pi workbench for planning, research, delegated implementation, verification, durable agent memory, and trusted skill evolution.",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test tests"
+    "test": "bun test tests",
+    "typecheck": "node scripts/typecheck.mjs"
   }
 }

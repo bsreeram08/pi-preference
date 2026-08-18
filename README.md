@@ -1,6 +1,6 @@
 # Pi Workbench
 
-A preference-aware Pi capability workbench for intent clarification, evidence-backed research, planning, delegated implementation, independent verification, durable preferences, and trusted skill evolution.
+A preference-aware Pi capability workbench for intent clarification, evidence-backed research, planning, delegated implementation, independent verification, durable agent memory, explicit preferences, and trusted skill evolution.
 
 ## Principles
 
@@ -16,6 +16,7 @@ A preference-aware Pi capability workbench for intent clarification, evidence-ba
 10. Main Pi acts as the Coordinator: it routes work by capability, and every child agent can progressively load the same installed Pi skills.
 11. Explicit user preferences survive sessions and outrank generic workflow defaults.
 12. New and updated skills from explicitly trusted sources are staged, validated, backed up, and audit-logged before adoption.
+13. Agent memory is isolated by default, shared only through Coordinator review, provenance-aware, bounded, forgettable, and always treated as fallible data.
 
 ## Install on another machine
 
@@ -36,9 +37,9 @@ The installer:
 - merges portable settings without deleting machine-specific values;
 - merges the explicit preference baseline and trusted skill sources;
 - preserves replaced resources as timestamped backups;
-- runs the full Bun test suite and an offline Pi RPC import smoke test.
+- runs the full Bun test suite, a strict TypeScript check when `tsc` is available, and main/child Pi RPC smoke tests.
 
-Provider credentials, sessions, project state, skill-update backups, and generated knowledge are never included. Configure model authentication separately on each machine. After installation, start Pi (or run `/reload`) and run `/skills-evolve` once.
+Provider credentials, sessions, project runtime state, agent memory, skill-update backups, and generated knowledge are never included. Configure model authentication separately on each machine. After installation, start Pi (or run `/reload`) and run `/skills-evolve` once.
 
 To update an installed machine:
 
@@ -64,6 +65,7 @@ During a Workbench run, the footer shows the Supervisor and delegated agents as 
 | `/workflow-status` | Show current plan state and durable evidence paths |
 | `/preferences` | Review/edit Pi's durable user operating preferences |
 | `/remember [preference]` | Explicitly teach Pi a durable preference |
+| `/memory [query]` | Show memory status/pending proposals, or recall relevant entries |
 | `/skills-evolve` | Stage and validate all new/updated skills from trusted sources, then reload |
 | `/skills-evolution-status` | Show trusted sources, cadence, audit, and community concept feed |
 | `/council [idea]` | Run three council rounds, pause after Round 1, and draft/approve intent |
@@ -110,7 +112,7 @@ research/runs/<timestamp>-<slug>/
 └── manifest.json
 ```
 
-The extension itself is global at `~/.pi/agent/extensions/pi-workbench/`, but intent, settings, and history are stored inside each project.
+The extension itself is global at `~/.pi/agent/extensions/pi-workbench/`; intent, settings, workflow history, and research state live inside each project. Protected agent memory is project-keyed but stored under the Pi agent directory.
 
 ## QMD
 
@@ -195,6 +197,7 @@ Durable global state:
 
 ```text
 ~/.pi/agent/user-profile.json
+~/.pi/agent/memory/pi-workbench/
 ~/.pi/agent/skill-evolution/config.json
 ~/.pi/agent/skill-evolution/state.json
 ~/.pi/agent/skill-evolution/audit.jsonl
@@ -204,11 +207,29 @@ Durable global state:
 
 Trusted skill evolution defaults to `mattpocock/skills` and `emilkowalski/skills` every 24 hours. Updates are installed into a temporary home first, frontmatter and size are validated, changed skills are backed up, and only then are they copied into `~/.agents/skills`. The Karpathy issue index is explicitly labeled as unverified hypothesis input; agents must validate an issue before applying it. Unknown third-party repositories are never auto-trusted.
 
+## Workbench memory
+
+`workbench_memory` gives the Coordinator and child agents durable, evidence-backed memory without turning recalled text into authority:
+
+- Project scope is the default, including automatic prompt recall. Global scope accepts only reusable `learning` and `warning` entries and must be recalled explicitly.
+- Every specialist has a private namespace. Automatic recall exposes only shared entries plus that specialist's own entries.
+- All project-scoped memory lives under `~/.pi/agent/memory/pi-workbench/projects/<canonical-project-hash>/`, outside the child workspace. Unsafe agent-directory overlap is rejected, and the child extension blocks direct file-tool access to protected memory roots.
+- Specialists can write private memory or submit `propose_shared`; only the Coordinator can inspect and promote the pending inbox.
+- The Coordinator can write shared entries directly, preserve derivation/supersession links, and invalidate entries through integrity-checked tombstones.
+- Volatile entries can carry `expiresAt`; stale entries are excluded from normal recall but remain auditable.
+- Every entry and tombstone carries a SHA-256 checksum. Status reports altered or unreadable records instead of injecting them.
+- Writes use atomic file replacement and an owner-token per-scope process lock, preserving deduplication under concurrent child processes. Abandoned locks fail closed and require deliberate operator recovery rather than unsafe automatic takeover.
+- Injected context is relevance-filtered and capped at 12,000 characters. It explicitly says memory is fallible data, not executable instruction.
+- Credentials, sensitive personal data, prompt-injection-shaped text, and unsafe global facts/decisions are rejected.
+
+Explicit user operating preferences still belong in `preference_memory` and `~/.pi/agent/user-profile.json`; Workbench memory does not replace personalization. The design adapts lightweight namespace, provenance, invalidation, and retention ideas from `tickernelz/pi-memory` and Semantica without adding either package as a runtime dependency. See [`docs/memory.md`](docs/memory.md) for the full trust and lifecycle model.
+
 ## Development checks
 
 ```bash
 cd ~/.pi/agent/extensions/pi-workbench
 bun run test
+bun run typecheck
 ```
 
 After editing, run `/reload` in pi.

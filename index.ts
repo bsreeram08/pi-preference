@@ -42,6 +42,7 @@ import { registerWorkbenchResearch } from "./research.ts";
 import { registerWorkflow } from "./workflow.ts";
 import { registerSkillEvolution } from "./skill-evolution.ts";
 import { registerUserPreferences } from "./user-preferences.ts";
+import { registerWorkbenchMemory } from "./memory.ts";
 import type { AgentResult, AgentSpec, CouncilSession, Exec } from "./types.ts";
 import { canDelegateSpecialists, SupervisorClient, type SupervisorDecision } from "./supervisor.ts";
 import {
@@ -228,6 +229,10 @@ export default function piWorkbench(pi: ExtensionAPI) {
   const dashboard = new WorkbenchDashboardController(pi);
 
   registerUserPreferences(pi);
+  registerWorkbenchMemory(pi, {
+    exec,
+    report: (title, body) => report(pi, title, body),
+  });
   registerSkillEvolution(pi);
 
   pi.registerEntryRenderer(REPORT_ENTRY, (entry, { expanded }, theme) => {
@@ -566,7 +571,13 @@ export default function piWorkbench(pi: ExtensionAPI) {
               implementationWorkerTask(spec, session.topic, intent, decisions, plan),
               undefined,
               progress.update,
-              { dashboard, groupId: "implementation-candidates", groupTitle: "Implementation candidates", jobId: `candidate-${spec.id}` },
+              {
+                dashboard,
+                groupId: "implementation-candidates",
+                groupTitle: "Implementation candidates",
+                jobId: `candidate-${spec.id}`,
+                memoryProjectRoot: root,
+              },
             );
           }),
         );

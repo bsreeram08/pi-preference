@@ -134,10 +134,20 @@ else
   printf 'warning: bun is unavailable; skipped the Workbench test suite\n' >&2
 fi
 
+if command -v tsc >/dev/null 2>&1; then
+  (cd "$ROOT" && node scripts/typecheck.mjs)
+else
+  printf 'warning: tsc is unavailable; skipped the strict TypeScript check\n' >&2
+fi
+
 SMOKE_OUT="$(mktemp)"
 SMOKE_ERR="$(mktemp)"
-trap 'rm -f "$SMOKE_OUT" "$SMOKE_ERR"' EXIT
-printf '%s\n' '{"type":"get_commands","id":"commands"}' '{"type":"shutdown","id":"done"}' \
+CHILD_SMOKE_OUT="$(mktemp)"
+CHILD_SMOKE_ERR="$(mktemp)"
+CHILD_SMOKE_MARKER="$(mktemp)"
+trap 'rm -f "$SMOKE_OUT" "$SMOKE_ERR" "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR" "$CHILD_SMOKE_MARKER"' EXIT
+
+printf '%s\n' '{"type":"get_commands","id":"commands"}' \
   | PI_OFFLINE=1 pi --mode rpc --no-session --no-extensions --extension "$ROOT/index.ts" \
     >"$SMOKE_OUT" 2>"$SMOKE_ERR"
 if grep -q 'extension_error' "$SMOKE_OUT" "$SMOKE_ERR"; then
@@ -145,6 +155,73 @@ if grep -q 'extension_error' "$SMOKE_OUT" "$SMOKE_ERR"; then
   printf 'error: Pi Workbench extension smoke test failed\n' >&2
   exit 1
 fi
+
+python3 - "$SMOKE_OUT" <<'PY'
+import json
+import sys
+
+responses = []
+for line in open(sys.argv[1]):
+    try:
+        responses.append(json.loads(line))
+    except json.JSONDecodeError:
+        pass
+command_response = next(
+    (item for item in responses if item.get("type") == "response" and item.get("command") == "get_commands"),
+    None,
+)
+if not command_response or not command_response.get("success"):
+    raise SystemExit("error: Pi Workbench command discovery failed")
+names = {item.get("name") for item in command_response.get("data", {}).get("commands", [])}
+required = {"plan", "start-work", "autopilot", "delegate", "workflow-status", "memory"}
+forbidden = {"prometheus", "ulw", "ultrawork", "discipline", "discipline-status", "planner", "workflow"}
+missing = sorted(required - names)
+unexpected = sorted(forbidden & names)
+if missing or unexpected:
+    raise SystemExit(f"error: invalid Workbench command set; missing={missing}, unexpected={unexpected}")
+PY
+
+printf '%s\n' '{"type":"get_state","id":"state"}' \
+  | PI_OFFLINE=1 PI_WORKBENCH_AGENT=installer-smoke PI_WORKBENCH_PROJECT_ROOT="$ROOT" \
+    PI_WORKBENCH_CHILD_SMOKE_FILE="$CHILD_SMOKE_MARKER" pi --mode rpc --no-session --no-extensions --extension "$ROOT/child-tools.ts" \
+      --tools workbench_memory,qmd_search \
+      >"$CHILD_SMOKE_OUT" 2>"$CHILD_SMOKE_ERR"
+if grep -q 'extension_error' "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR"; then
+  cat "$CHILD_SMOKE_ERR" >&2
+  printf 'error: Pi Workbench child memory/tool smoke test failed\n' >&2
+  exit 1
+fi
+python3 - "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_MARKER" <<'PY'
+import json
+import sys
+
+responses = []
+for line in open(sys.argv[1]):
+    try:
+        responses.append(json.loads(line))
+    except json.JSONDecodeError:
+        pass
+state = next(
+    (item for item in responses if item.get("type") == "response" and item.get("command") == "get_state"),
+    None,
+)
+if not state or not state.get("success"):
+    raise SystemExit("error: Pi Workbench child memory/tool RPC smoke did not return a successful state response")
+try:
+    marker = json.load(open(sys.argv[2]))
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f"error: Pi Workbench child tool registration marker is invalid: {error}")
+required_tools = {"workbench_memory", "qmd_search"}
+all_tools = set(marker.get("allTools", []))
+active_tools = set(marker.get("activeTools", []))
+if not required_tools <= all_tools or not required_tools <= active_tools:
+    raise SystemExit(
+        f"error: child tool registration failed; missing_all={sorted(required_tools - all_tools)}, "
+        f"missing_active={sorted(required_tools - active_tools)}"
+    )
+if marker.get("agentId") != "installer-smoke":
+    raise SystemExit(f"error: child source-agent attribution failed: {marker.get('agentId')!r}")
+PY
 
 printf '\nPi Workbench installed in %s\n' "$AGENT_DIR"
 printf 'Run /reload in an existing Pi session, then /skills-evolve to initialize trusted skills.\n'
