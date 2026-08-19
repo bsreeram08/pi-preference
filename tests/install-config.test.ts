@@ -113,6 +113,8 @@ describe("public installer configuration safety", () => {
     expect(await fs.readFile(external, "utf8")).toBe("{}\n");
   });
 
+  // This exercises the complete installer subprocess and can exceed Bun's 5 s
+  // default test timeout on a loaded macOS CI runner.
   test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("restores replaced resources when a later link fails", async () => {
     const root = await temporaryRoot();
     const agentDir = path.join(root, "agent");
@@ -155,7 +157,7 @@ describe("public installer configuration safety", () => {
     expect(await fs.readFile(path.join(extensionsDir, "pi-look"), "utf8")).toBe("original-look\n");
     expect((await fs.lstat(path.join(extensionsDir, "pi-workbench"))).isSymbolicLink()).toBe(false);
     expect((await fs.lstat(path.join(extensionsDir, "pi-look"))).isSymbolicLink()).toBe(false);
-  });
+  }, 20_000);
 
   test("keeps the default profile non-invasive", async () => {
     const root = await temporaryRoot();
