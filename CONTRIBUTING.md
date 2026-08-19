@@ -1,6 +1,6 @@
 # Contributing to Sreeram's Pi Workbench
 
-Thank you for helping improve the Workbench.
+Thank you for helping improve the Workbench. Participation is governed by the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Before starting
 

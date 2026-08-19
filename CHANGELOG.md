@@ -2,7 +2,7 @@
 
 ## 0.4.1 — 2026-08-18
 
-- Prepared the project for public release as **Sreeram's Pi Workbench** under the MIT License, with third-party notices, security/support policies, contribution guidance, and GitHub issue/PR templates.
+- Prepared the project for public release as **Sreeram's Pi Workbench** under the MIT License, with third-party notices, security/support/conduct policies, contribution guidance, and GitHub issue/PR templates.
 - Added pinned development dependencies, a Bun lockfile, and least-privilege Ubuntu/macOS CI with full-SHA action pinning, tests, strict typechecking, shell checks, and isolated installer integration.
 - Changed a missing skill-evolution configuration to fail safe with automatic network synchronization disabled; `/skills-evolve` remains an explicit one-time action and `--full` opts into the allowlisted periodic profile.
 - Made the default installer non-invasive to settings, preferences, active theme, and skill configuration; the opinionated profile now requires `--full`.

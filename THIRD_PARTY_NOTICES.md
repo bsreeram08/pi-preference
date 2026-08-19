@@ -28,6 +28,10 @@ The Workbench memory design adapts general concepts—such as isolated namespace
 
 Neither project is bundled or installed as a Workbench runtime dependency.
 
+## Contributor Covenant
+
+The project Code of Conduct is informed by Contributor Covenant 2.1, which is available under the Creative Commons Attribution 4.0 License: <https://www.contributor-covenant.org/version/2/1/code_of_conduct/>.
+
 ## Optional external sources
 
 The opinionated setup profile can enable trusted skill retrieval from repositories named in `setup/defaults/skill-evolution.json`. Retrieved skills remain governed by their own repositories and licenses. Review those sources before opting in.

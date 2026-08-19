@@ -24,6 +24,7 @@ function git(args, options = {}) {
 
 const requiredFiles = [
   "LICENSE",
+  "CODE_OF_CONDUCT.md",
   "SECURITY.md",
   "CONTRIBUTING.md",
   "SUPPORT.md",
