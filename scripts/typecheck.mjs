@@ -53,11 +53,18 @@ function firstExisting(candidates, label) {
 const piRoot = process.env.PI_CODING_AGENT_PACKAGE_ROOT
   ? path.resolve(process.env.PI_CODING_AGENT_PACKAGE_ROOT)
   : findPackageRootFromExecutable(findExecutable("pi"), "@earendil-works/pi-coding-agent");
-const dependencies = path.join(piRoot, "node_modules");
-const typebox = firstExisting([
+const dependencyRoots = [
+  path.join(root, "node_modules"),
+  path.join(piRoot, "node_modules"),
+].filter((candidate, index, items) => items.indexOf(candidate) === index);
+const packageDeclaration = (packagePath, declaration) => firstExisting(
+  dependencyRoots.map((dependencies) => path.join(dependencies, ...packagePath.split("/"), declaration)),
+  `${packagePath} declarations`,
+);
+const typebox = firstExisting(dependencyRoots.flatMap((dependencies) => [
   path.join(dependencies, "typebox", "build", "index.d.mts"),
   path.join(dependencies, "typebox", "build", "index.d.ts"),
-], "Pi's TypeBox declarations");
+]), "Pi's TypeBox declarations");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "pi-workbench-typecheck-"));
 const configPath = path.join(temporary, "tsconfig.json");
 const config = {
@@ -70,13 +77,13 @@ const config = {
     allowImportingTsExtensions: true,
     skipLibCheck: true,
     types: ["node"],
-    typeRoots: [path.join(dependencies, "@types")],
+    typeRoots: dependencyRoots.map((dependencies) => path.join(dependencies, "@types")),
     baseUrl: root,
     paths: {
       "@earendil-works/pi-coding-agent": [path.join(piRoot, "dist", "index.d.ts")],
-      "@earendil-works/pi-ai": [path.join(dependencies, "@earendil-works", "pi-ai", "dist", "index.d.ts")],
-      "@earendil-works/pi-agent-core": [path.join(dependencies, "@earendil-works", "pi-agent-core", "dist", "index.d.ts")],
-      "@earendil-works/pi-tui": [path.join(dependencies, "@earendil-works", "pi-tui", "dist", "index.d.ts")],
+      "@earendil-works/pi-ai": [packageDeclaration("@earendil-works/pi-ai", "dist/index.d.ts")],
+      "@earendil-works/pi-agent-core": [packageDeclaration("@earendil-works/pi-agent-core", "dist/index.d.ts")],
+      "@earendil-works/pi-tui": [packageDeclaration("@earendil-works/pi-tui", "dist/index.d.ts")],
       typebox: [typebox],
     },
   },
@@ -92,7 +99,7 @@ try {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
-  console.log("Pi Workbench strict TypeScript check passed.");
+  console.log("Sreeram's Pi Workbench strict TypeScript check passed.");
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
 }

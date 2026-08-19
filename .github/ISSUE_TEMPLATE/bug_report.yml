@@ -1,0 +1,74 @@
+name: Bug report
+description: Report reproducible incorrect Workbench behavior
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. For vulnerabilities, use the private process in SECURITY.md instead.
+  - type: input
+    id: workbench-version
+    attributes:
+      label: Workbench version
+      placeholder: 0.4.1 or commit SHA
+    validations:
+      required: true
+  - type: input
+    id: pi-version
+    attributes:
+      label: Pi version
+      placeholder: Output of pi --version
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and shell
+      placeholder: macOS 15 / zsh, Ubuntu 24.04 / bash, or WSL
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation mode
+      options:
+        - Default installer
+        - Opinionated installer (--full)
+        - Manual/local development
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest repeatable sequence.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or evidence
+      description: Never include credentials, private prompts, session files, memory entries, or proprietary source.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, personal data, private prompts, and proprietary project content.
+          required: true
+        - label: I searched existing issues before filing this report.
+          required: true

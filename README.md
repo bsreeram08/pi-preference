@@ -1,6 +1,11 @@
-# Pi Workbench
+# Sreeram's Pi Workbench
 
-A preference-aware Pi capability workbench for intent clarification, evidence-backed research, planning, delegated implementation, independent verification, durable agent memory, explicit preferences, and trusted skill evolution.
+[![CI](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-FF8A4C.svg)](LICENSE)
+
+A preference-aware [Pi](https://github.com/earendil-works/pi) capability workbench for intent clarification, evidence-backed research, planning, delegated implementation, independent verification, durable agent memory, explicit preferences, and trusted skill evolution.
+
+> **Pre-1.0:** interfaces and stored formats may evolve. Pi extensions execute with the permissions of the user running Pi. Review the source, [`SECURITY.md`](SECURITY.md), and the pinned RePrompter submodule before installation.
 
 ## Principles
 
@@ -18,30 +23,59 @@ A preference-aware Pi capability workbench for intent clarification, evidence-ba
 12. New and updated skills from explicitly trusted sources are staged, validated, backed up, and audit-logged before adoption.
 13. Agent memory is isolated by default, shared only through Coordinator review, provenance-aware, bounded, forgettable, and always treated as fallible data.
 
-## Install on another machine
+## Requirements
 
-The canonical distribution is the private GitHub repository. Clone it directly into Pi's extension directory and run the idempotent installer:
+- macOS, Linux, or WSL with Bash
+- Git and Python 3
+- Node.js 22.19 or newer
+- Pi coding agent 0.84.2 or a compatible newer release
+- Bun 1.3.14 and TypeScript 5.9.3 only for development or `--strict` installation validation
+
+The supported distribution is a recursive Git clone because RePrompter is a pinned submodule. The installer does not fetch a missing submodule: it fails before mutation and prints the explicit recovery command. The root package remains `private: true` to prevent accidental npm publication.
+
+Optional capabilities use tools already available to Pi or explicitly invoked by the user: QMD for semantic project indexes, Playwright/Chromium for JavaScript-rendered research sources, provider-specific research API keys, and `npx`/`gh` during `/skills-evolve`. Core planning and memory do not install those integrations automatically.
+
+## Install
+
+Clone over public HTTPS directly into Pi's extension directory:
 
 ```bash
 mkdir -p "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions"
 git clone --recurse-submodules \
-  git@github.com:bsreeram08/pi-workbench.git \
+  https://github.com/bsreeram08/pi-workbench.git \
   "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 ./install.sh
 ```
 
-The installer:
+The safe default installer:
 
-- links Pi Workbench, the framed editor extension, and the Ember theme;
-- merges portable settings without deleting machine-specific values;
-- merges the explicit preference baseline and trusted skill sources;
-- preserves replaced resources as timestamped backups;
-- runs the full Bun test suite, a strict TypeScript check when `tsc` is available, and main/child Pi RPC smoke tests.
+- validates the submodule and Pi RPC imports before changing the installation;
+- links Workbench, the framed editor extension, and the Ember theme file;
+- preserves the current active theme, settings, preferences, and skill-evolution configuration;
+- backs up replaced resources and rolls links back if installation fails;
+- runs Bun tests and strict TypeScript checks when those tools are available.
 
-Provider credentials, sessions, project runtime state, agent memory, skill-update backups, and generated knowledge are never included. Configure model authentication separately on each machine. After installation, start Pi (or run `/reload`) and run `/skills-evolve` once.
+To opt into Sreeram's complete opinionated profile—Ember activation, status line, explicit preference baseline, and allowlisted periodic skill evolution—run:
 
-To update an installed machine:
+```bash
+./install.sh --full
+```
+
+Existing JSON values win except for the explicitly requested Ember activation. Every modified existing configuration file receives a timestamped byte-for-byte backup. Malformed or symlinked configuration fails closed before installation changes anything. No companion Pi packages are added automatically.
+
+Maintainers and contributors should require every development check:
+
+```bash
+bun install --frozen-lockfile
+./install.sh --strict
+```
+
+Provider credentials, sessions, project runtime state, agent memory, update backups, and generated knowledge are never distributed. Configure model authentication separately. Automatic skill evolution is disabled without explicit configuration; `/skills-evolve` performs a user-requested one-time sync.
+
+After installation, start Pi or run `/reload`.
+
+### Update
 
 ```bash
 cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
@@ -49,6 +83,20 @@ git pull --ff-only
 git submodule update --init --recursive
 ./install.sh
 ```
+
+Use `./install.sh --full` again only if that profile remains desired.
+
+### Uninstall or restore
+
+Remove only the Workbench, Pi Look, and Ember symlinks under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}` after verifying where each points. Workbench deliberately leaves project state and memory intact so uninstalling cannot destroy user data.
+
+Installer backups are stored under:
+
+```text
+${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/backups/pi-workbench/<timestamp-pid>/
+```
+
+Inspect a backup before copying its `resources/` or `config/` files back into the corresponding Pi agent paths.
 
 ## Live agent UI
 
@@ -125,7 +173,7 @@ The `council_knowledge` tool is also available to the main pi agent.
 
 ## RePrompter
 
-The vendored RePrompter checkout lives at `reprompter/`. Every specialist prompt tells the agent to apply its intent, constraints, artifact, and success-criteria discipline.
+The pinned RePrompter submodule lives at `reprompter/`. Every specialist prompt tells the agent to apply its intent, constraints, artifact, and success-criteria discipline. Its upstream MIT notice is preserved in `reprompter/LICENSE` and summarized in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 Update the pinned submodule with:
 
@@ -170,6 +218,8 @@ Defaults in `config.json`:
 }
 ```
 
+These model identifiers are opinionated routing defaults, not bundled credentials. Edit `.pi/pi-workbench/config.json` or use `/council-settings` to select models available from your configured Pi providers; setting an optional workflow/research model to `null` lets the child process use its normal fallback.
+
 ## Research retrieval
 
 Research agents have isolated contexts and read-only project tools. Their public-web tools use this fallback order:
@@ -205,7 +255,7 @@ Durable global state:
 ~/.pi/agent/knowledge/autoresearch-community.md
 ```
 
-Trusted skill evolution defaults to `mattpocock/skills` and `emilkowalski/skills` every 24 hours. Updates are installed into a temporary home first, frontmatter and size are validated, changed skills are backed up, and only then are they copied into `~/.agents/skills`. The Karpathy issue index is explicitly labeled as unverified hypothesis input; agents must validate an issue before applying it. Unknown third-party repositories are never auto-trusted.
+Trusted skill evolution is disabled when no explicit configuration exists. The `--full` profile can opt into an allowlist containing `mattpocock/skills` and `emilkowalski/skills` with a 24-hour cadence; `/skills-evolve` triggers a one-time user-requested sync. Updates are installed into a temporary home first, frontmatter and size are validated, changed skills are backed up, and only then are they copied into `~/.agents/skills`. The Karpathy issue index is explicitly labeled as unverified hypothesis input; agents must validate an issue before applying it. Unknown third-party repositories are never auto-trusted.
 
 ## Workbench memory
 
@@ -224,12 +274,24 @@ Trusted skill evolution defaults to `mattpocock/skills` and `emilkowalski/skills
 
 Explicit user operating preferences still belong in `preference_memory` and `~/.pi/agent/user-profile.json`; Workbench memory does not replace personalization. The design adapts lightweight namespace, provenance, invalidation, and retention ideas from `tickernelz/pi-memory` and Semantica without adding either package as a runtime dependency. See [`docs/memory.md`](docs/memory.md) for the full trust and lifecycle model.
 
-## Development checks
+## Development
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow. From a recursive clone:
 
 ```bash
-cd ~/.pi/agent/extensions/pi-workbench
-bun run test
-bun run typecheck
+bun install --frozen-lockfile
+bun run check
+PI_CODING_AGENT_DIR="$(mktemp -d)/agent" ./install.sh --strict
 ```
 
-After editing, run `/reload` in pi.
+Before changing repository visibility or cutting a release, commit all intended changes and run the mandatory history-aware gate:
+
+```bash
+bun run release-check
+```
+
+After editing an installed checkout, run `/reload` in Pi.
+
+## License and support
+
+Sreeram's Pi Workbench is available under the [MIT License](LICENSE). See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), [`SECURITY.md`](SECURITY.md), and [`SUPPORT.md`](SUPPORT.md).

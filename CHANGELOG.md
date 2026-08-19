@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-08-18
+
+- Prepared the project for public release as **Sreeram's Pi Workbench** under the MIT License, with third-party notices, security/support policies, contribution guidance, and GitHub issue/PR templates.
+- Added pinned development dependencies, a Bun lockfile, and least-privilege Ubuntu/macOS CI with full-SHA action pinning, tests, strict typechecking, shell checks, and isolated installer integration.
+- Changed a missing skill-evolution configuration to fail safe with automatic network synchronization disabled; `/skills-evolve` remains an explicit one-time action and `--full` opts into the allowlisted periodic profile.
+- Made the default installer non-invasive to settings, preferences, active theme, and skill configuration; the opinionated profile now requires `--full`.
+- Moved installer validation before mutation, added fail-closed JSON and symlink checks, byte-for-byte configuration backups, link rollback, unique backup paths, and strict validation mode.
+- Made trusted skill batches transactional: all candidates validate and back up before mutation, provenance commits atomically, failures roll back, malformed locks fail closed, and owner-token locks are never taken over automatically.
+- Added a mandatory clean-tree, full-history release gate for secret patterns, noreply commit metadata, submodule integrity, licensing, and pinned CI actions.
+- Removed floating companion package and provider/model defaults from the portable settings baseline.
+
 ## 0.4.0 — 2026-08-18
 
 - Added native `workbench_memory` and `/memory` with project/global scopes, private per-agent namespaces, shared memory, and a Coordinator-reviewed proposal inbox.

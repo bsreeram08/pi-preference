@@ -39,7 +39,7 @@ export async function ensureProjectState(paths: ProjectPaths): Promise<void> {
   } catch {
     await fs.writeFile(
       paths.decisions,
-      "# Pi Workbench Decisions\n\nDecisions are appended here. Each entry records what the user chose and why.\n",
+      "# Sreeram's Pi Workbench Decisions\n\nDecisions are appended here. Each entry records what the user chose and why.\n",
       "utf8",
     );
   }
@@ -190,7 +190,7 @@ export function formatQmdResults(results: QmdResult[]): string {
 }
 
 export function formatSessionSummary(session: CouncilSession | undefined): string {
-  if (!session) return "No Pi Workbench session exists for this project.";
+  if (!session) return "This project has no Sreeram's Pi Workbench session.";
   return [
     `Topic: ${session.topic}`,
     `Phase: ${session.phase}`,

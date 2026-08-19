@@ -1,4 +1,4 @@
-# Workbench Memory Model
+# Sreeram's Pi Workbench Memory Model
 
 Workbench memory is a native TypeScript persistence module for durable agent findings. It is separate from Pi sessions, workflow artifacts, research evidence, and explicit user preferences.
 

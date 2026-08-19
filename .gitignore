@@ -1,11 +1,17 @@
 # Local and generated files
 .DS_Store
 node_modules/
+dist/
+coverage/
+.cache/
 .reprompter/
 *.log
 *.tmp
 *.bak
 *.backup-*
+*.tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # Never publish credentials or provider authentication
 .env
@@ -14,6 +20,16 @@ node_modules/
 *credentials*.json
 *secrets*.json
 *auth*.json
+.npmrc
+.yarnrc
+.pypirc
+.netrc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 
 # Pi runtime/session state is intentionally project- or machine-local
 .pi/

@@ -1,15 +1,16 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-interface TrustedSkillSource {
+export interface TrustedSkillSource {
   source: string;
   repository: string;
 }
 
-interface SkillEvolutionConfig {
+export interface SkillEvolutionConfig {
   version: 1;
   enabled: boolean;
   intervalHours: number;
@@ -18,16 +19,18 @@ interface SkillEvolutionConfig {
   autoresearchIssuesRepository: string;
 }
 
-interface SkillEvolutionState {
+export interface SkillEvolutionState {
   version: 1;
   lastAttemptAt?: string;
   lastSuccessAt?: string;
   lastStatus?: "updated" | "unchanged" | "failed" | "skipped";
   lastMessage?: string;
   lastChanges?: string[];
+  lastAttemptedChanges?: string[];
+  lastRollbackFailures?: string[];
 }
 
-interface SkillLockEntry {
+export interface SkillLockEntry {
   source?: string;
   sourceType?: string;
   sourceUrl?: string;
@@ -38,7 +41,7 @@ interface SkillLockEntry {
   [key: string]: unknown;
 }
 
-interface SkillLock {
+export interface SkillLock {
   version: number;
   skills: Record<string, SkillLockEntry>;
   [key: string]: unknown;
@@ -63,9 +66,11 @@ const SHARED_SKILL_LOCK = path.join(SHARED_AGENT_DIR, ".skill-lock.json");
 const QMD_COLLECTION = "pi-evolving-knowledge";
 const MAX_SKILL_BYTES = 10 * 1024 * 1024;
 
+export const SKILL_EVOLUTION_ENABLED_BY_DEFAULT = false;
+
 const DEFAULT_CONFIG: SkillEvolutionConfig = {
   version: 1,
-  enabled: true,
+  enabled: SKILL_EVOLUTION_ENABLED_BY_DEFAULT,
   intervalHours: 24,
   skillsCliVersion: "1.5.22",
   trustedSources: [
@@ -95,9 +100,53 @@ async function readJson<T>(filePath: string, fallback: T): Promise<T> {
 
 async function writeJsonAtomic(filePath: string, value: unknown, mode = 0o600): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode });
-  await fs.rename(temporary, filePath);
+  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}-${randomUUID()}`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode });
+    await fs.rename(temporary, filePath);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+async function readSkillLock(filePath: string, fallback?: SkillLock): Promise<SkillLock> {
+  let stats: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    stats = await fs.lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT" && fallback) return fallback;
+    throw new Error(`Cannot inspect skill provenance lock ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Skill provenance lock must be a regular file: ${filePath}`);
+  }
+  if (stats.size > MAX_SKILL_BYTES) throw new Error(`Skill provenance lock is too large: ${filePath}`);
+
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    throw new Error(`Cannot read skill provenance lock ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Invalid skill provenance lock ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Invalid skill provenance lock root: ${filePath}`);
+  }
+  const record = parsed as Record<string, unknown>;
+  if (!record.skills || typeof record.skills !== "object" || Array.isArray(record.skills)) {
+    throw new Error(`Invalid skills map in provenance lock: ${filePath}`);
+  }
+  for (const [name, entry] of Object.entries(record.skills as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`Invalid provenance entry for skill ${name}: ${filePath}`);
+    }
+  }
+  return parsed as SkillLock;
 }
 
 async function loadConfig(): Promise<SkillEvolutionConfig> {
@@ -186,32 +235,49 @@ async function validateStagedSkill(name: string, sourceDir: string): Promise<voi
   await directoryStats(sourceDir);
 }
 
-async function appendAudit(entry: Record<string, unknown>): Promise<void> {
-  await fs.mkdir(EVOLUTION_ROOT, { recursive: true });
-  await fs.appendFile(AUDIT_PATH, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
+async function appendAudit(entry: Record<string, unknown>, auditPath = AUDIT_PATH): Promise<void> {
+  await fs.mkdir(path.dirname(auditPath), { recursive: true });
+  await fs.appendFile(auditPath, `${JSON.stringify(entry)}\n`, { encoding: "utf8", mode: 0o600 });
 }
 
-async function acquireLock(): Promise<fs.FileHandle | undefined> {
-  await fs.mkdir(EVOLUTION_ROOT, { recursive: true });
+export interface SkillEvolutionLock {
+  handle: fs.FileHandle;
+  token: string;
+  directory: string;
+  ownerPath: string;
+}
+
+export async function acquireSkillEvolutionLock(directory = LOCK_PATH): Promise<SkillEvolutionLock | undefined> {
+  await fs.mkdir(path.dirname(directory), { recursive: true });
   try {
-    return await fs.open(LOCK_PATH, "wx", 0o600);
-  } catch {
-    try {
-      const stat = await fs.stat(LOCK_PATH);
-      if (Date.now() - stat.mtimeMs > 15 * 60 * 1000) {
-        await fs.rm(LOCK_PATH, { force: true });
-        return await fs.open(LOCK_PATH, "wx", 0o600);
-      }
-    } catch {
-      // Another session may have removed the lock.
-    }
-    return undefined;
+    await fs.mkdir(directory, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+    throw error;
+  }
+
+  const token = randomUUID();
+  const ownerPath = path.join(directory, `${token}.json`);
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(ownerPath, "wx", 0o600);
+    await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, hostname: os.hostname(), createdAt: new Date().toISOString() })}\n`);
+    return { handle, token, directory, ownerPath };
+  } catch (error) {
+    await handle?.close().catch(() => undefined);
+    await fs.rm(ownerPath, { force: true }).catch(() => undefined);
+    await fs.rmdir(directory).catch(() => undefined);
+    throw error;
   }
 }
 
-async function releaseLock(handle: fs.FileHandle | undefined): Promise<void> {
-  try { await handle?.close(); } catch { /* ignore */ }
-  await fs.rm(LOCK_PATH, { force: true });
+export async function releaseSkillEvolutionLock(lock: SkillEvolutionLock | undefined): Promise<void> {
+  if (!lock) return;
+  await lock.handle.close().catch(() => undefined);
+  // The unguessable owner filename binds cleanup to this owner. rmdir removes only an
+  // empty directory, so another owner/tamper marker can never be recursively deleted.
+  await fs.rm(lock.ownerPath, { force: true }).catch(() => undefined);
+  await fs.rmdir(lock.directory).catch(() => undefined);
 }
 
 async function stageTrustedSkills(config: SkillEvolutionConfig, tempHome: string): Promise<SkillLock> {
@@ -231,64 +297,197 @@ async function stageTrustedSkills(config: SkillEvolutionConfig, tempHome: string
       throw new Error(`Failed to stage ${trusted.source}: ${(result.stderr || result.stdout).slice(-2000)}`);
     }
   }
-  return readJson<SkillLock>(path.join(tempHome, ".agents", ".skill-lock.json"), { version: 3, skills: {} });
+  return readSkillLock(path.join(tempHome, ".agents", ".skill-lock.json"));
 }
 
-async function installStagedSkills(config: SkillEvolutionConfig, tempHome: string, stagedLock: SkillLock): Promise<string[]> {
-  const currentLock = await readJson<SkillLock>(SHARED_SKILL_LOCK, { version: stagedLock.version || 3, skills: {} });
-  const trustedNames = new Set(config.trustedSources.map((source) => source.source));
-  const changes: string[] = [];
-  const backupRoot = path.join(EVOLUTION_ROOT, "backups", new Date().toISOString().replace(/[:.]/g, "-"));
-  await fs.mkdir(SHARED_SKILLS_DIR, { recursive: true });
+export interface SkillInstallLocations {
+  evolutionRoot: string;
+  sharedSkillsDir: string;
+  sharedSkillLock: string;
+}
 
-  // Preflight every destination before changing anything. A trusted repository may not
-  // silently replace a same-named skill owned by another source or with unknown provenance.
-  for (const [name, entry] of Object.entries(stagedLock.skills)) {
-    if (!entry.source || !trustedNames.has(entry.source)) continue;
-    const existing = currentLock.skills[name];
-    if (existing?.source && !trustedNames.has(existing.source)) {
-      throw new Error(`Trusted skill ${name} conflicts with existing source ${existing.source}; refusing automatic replacement.`);
-    }
-    if (!existing) {
-      let targetExists = true;
-      try {
-        await fs.access(path.join(SHARED_SKILLS_DIR, name));
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") targetExists = false;
-        else throw error;
-      }
-      if (targetExists) throw new Error(`Trusted skill ${name} conflicts with an existing skill of unknown provenance.`);
-    }
+export interface SkillInstallHooks {
+  beforeCommitCandidate?: (name: string, index: number) => Promise<void> | void;
+}
+
+const DEFAULT_SKILL_INSTALL_LOCATIONS: SkillInstallLocations = {
+  evolutionRoot: EVOLUTION_ROOT,
+  sharedSkillsDir: SHARED_SKILLS_DIR,
+  sharedSkillLock: SHARED_SKILL_LOCK,
+};
+
+interface SkillInstallCandidate {
+  name: string;
+  entry: SkillLockEntry;
+  existing?: SkillLockEntry;
+  stagedDir: string;
+  target: string;
+  temporary: string;
+  displaced: string;
+  hadTarget: boolean;
+  change: string;
+}
+
+export class SkillInstallTransactionError extends Error {
+  constructor(
+    message: string,
+    readonly attemptedChanges: string[],
+    readonly rollbackFailures: string[],
+  ) {
+    super(message);
+    this.name = "SkillInstallTransactionError";
   }
+}
 
-  for (const [name, entry] of Object.entries(stagedLock.skills)) {
-    if (!entry.source || !trustedNames.has(entry.source)) continue;
+async function lstatOptional(filePath: string): Promise<Awaited<ReturnType<typeof fs.lstat>> | undefined> {
+  try {
+    return await fs.lstat(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+export async function installStagedSkills(
+  config: SkillEvolutionConfig,
+  tempHome: string,
+  stagedLock: SkillLock,
+  locations: SkillInstallLocations = DEFAULT_SKILL_INSTALL_LOCATIONS,
+  hooks: SkillInstallHooks = {},
+): Promise<string[]> {
+  const loadedLock = await readSkillLock(locations.sharedSkillLock, { version: stagedLock.version || 3, skills: {} });
+  const currentLock: SkillLock = { ...loadedLock, skills: { ...loadedLock.skills } };
+  const trustedNames = new Set(config.trustedSources.map((source) => source.source));
+  const transactionId = `${Date.now()}-${process.pid}-${randomUUID()}`;
+  const backupRoot = path.join(locations.evolutionRoot, "backups", transactionId);
+  const candidates: SkillInstallCandidate[] = [];
+  await fs.mkdir(locations.sharedSkillsDir, { recursive: true });
+
+  // Validate every staged candidate and every destination before creating backups or
+  // mutating a shared skill. One bad candidate must leave the entire batch untouched.
+  for (const [name, rawEntry] of Object.entries(stagedLock.skills as Record<string, unknown>)) {
+    if (!rawEntry || typeof rawEntry !== "object" || Array.isArray(rawEntry)) {
+      throw new Error(`Invalid staged provenance entry for skill ${name}.`);
+    }
+    const entry = rawEntry as SkillLockEntry;
+    if (!entry.source || typeof entry.source !== "string") {
+      throw new Error(`Staged skill ${name} has no source provenance.`);
+    }
+    if (!trustedNames.has(entry.source)) {
+      throw new Error(`Staged skill ${name} came from untrusted source ${entry.source}; refusing the batch.`);
+    }
     const stagedDir = path.join(tempHome, ".agents", "skills", name);
     await validateStagedSkill(name, stagedDir);
-    const existing = currentLock.skills[name];
-    if (existing?.skillFolderHash && existing.skillFolderHash === entry.skillFolderHash) continue;
 
-    const target = path.join(SHARED_SKILLS_DIR, name);
-    try {
-      await fs.access(target);
-      const backup = path.join(backupRoot, name);
-      await fs.mkdir(path.dirname(backup), { recursive: true });
-      await fs.cp(target, backup, { recursive: true, force: true });
-    } catch {
-      // A new skill has nothing to back up.
+    const existing = currentLock.skills[name];
+    if (existing && (!existing.source || !trustedNames.has(existing.source))) {
+      throw new Error(`Trusted skill ${name} conflicts with existing unknown or untrusted provenance; refusing automatic replacement.`);
+    }
+    if (existing?.source && existing.source !== entry.source) {
+      throw new Error(`Trusted skill ${name} belongs to ${existing.source}; ${entry.source} may not replace it.`);
     }
 
-    const temporary = path.join(SHARED_SKILLS_DIR, `.${name}.evolving-${process.pid}`);
-    await fs.rm(temporary, { recursive: true, force: true });
-    await fs.cp(stagedDir, temporary, { recursive: true, force: true });
-    await fs.rm(target, { recursive: true, force: true });
-    await fs.rename(temporary, target);
-    currentLock.skills[name] = entry;
-    changes.push(`${existing ? "updated" : "added"}: ${name} (${entry.source})`);
+    const target = path.join(locations.sharedSkillsDir, name);
+    const targetStat = await lstatOptional(target);
+    if (!existing && targetStat) {
+      throw new Error(`Trusted skill ${name} conflicts with an existing skill of unknown provenance.`);
+    }
+    if (targetStat && !targetStat.isDirectory()) {
+      throw new Error(`Trusted skill target must be a real directory, not a file or symbolic link: ${target}`);
+    }
+    if (existing?.skillFolderHash && existing.skillFolderHash === entry.skillFolderHash && targetStat) continue;
+
+    const temporary = path.join(locations.sharedSkillsDir, `.${name}.evolving-${transactionId}`);
+    const displaced = path.join(locations.sharedSkillsDir, `.${name}.previous-${transactionId}`);
+    candidates.push({
+      name,
+      entry,
+      existing,
+      stagedDir,
+      target,
+      temporary,
+      displaced,
+      hadTarget: Boolean(targetStat),
+      change: `${existing ? "updated" : "added"}: ${name} (${entry.source})`,
+    });
   }
 
-  if (changes.length > 0) await writeJsonAtomic(SHARED_SKILL_LOCK, currentLock);
-  return changes;
+  if (candidates.length === 0) return [];
+
+  // Prepare every replacement and byte-for-byte backup before moving any live target.
+  // Backup failures are fatal; only a verified ENOENT means there is nothing to back up.
+  try {
+    for (const candidate of candidates) {
+      await fs.rm(candidate.temporary, { recursive: true, force: true });
+      await fs.rm(candidate.displaced, { recursive: true, force: true });
+      await fs.cp(candidate.stagedDir, candidate.temporary, { recursive: true, force: true });
+
+      const liveStat = await lstatOptional(candidate.target);
+      if (Boolean(liveStat) !== candidate.hadTarget || (liveStat && !liveStat.isDirectory())) {
+        throw new Error(`Trusted skill target changed during preflight: ${candidate.target}`);
+      }
+      if (liveStat) {
+        const backup = path.join(backupRoot, candidate.name);
+        await fs.mkdir(path.dirname(backup), { recursive: true, mode: 0o700 });
+        await fs.chmod(backupRoot, 0o700);
+        await fs.cp(candidate.target, backup, { recursive: true, errorOnExist: true, force: false });
+      }
+    }
+  } catch (error) {
+    await Promise.allSettled(candidates.map((candidate) => fs.rm(candidate.temporary, { recursive: true, force: true })));
+    throw error;
+  }
+
+  const committed: SkillInstallCandidate[] = [];
+  const rollbackFailures: string[] = [];
+  try {
+    for (const [index, candidate] of candidates.entries()) {
+      let displaced = false;
+      try {
+        await hooks.beforeCommitCandidate?.(candidate.name, index);
+        if (candidate.hadTarget) {
+          await fs.rename(candidate.target, candidate.displaced);
+          displaced = true;
+        }
+        await fs.rename(candidate.temporary, candidate.target);
+        committed.push(candidate);
+      } catch (error) {
+        if (displaced) {
+          try {
+            await fs.rename(candidate.displaced, candidate.target);
+          } catch (rollbackError) {
+            rollbackFailures.push(`${candidate.name}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+          }
+        }
+        throw error;
+      }
+    }
+
+    for (const candidate of candidates) currentLock.skills[candidate.name] = candidate.entry;
+    await writeJsonAtomic(locations.sharedSkillLock, currentLock);
+  } catch (error) {
+    for (const candidate of committed.reverse()) {
+      try {
+        await fs.rm(candidate.target, { recursive: true, force: true });
+        if (candidate.hadTarget) await fs.rename(candidate.displaced, candidate.target);
+      } catch (rollbackError) {
+        rollbackFailures.push(`${candidate.name}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`);
+      }
+    }
+    const rollbackStatus = rollbackFailures.length > 0 ? "rollback was incomplete" : "the batch was rolled back";
+    throw new SkillInstallTransactionError(
+      `Trusted skill transaction failed and ${rollbackStatus}: ${error instanceof Error ? error.message : String(error)}`,
+      candidates.map((candidate) => candidate.change),
+      rollbackFailures,
+    );
+  } finally {
+    await Promise.allSettled(candidates.map((candidate) => fs.rm(candidate.temporary, { recursive: true, force: true })));
+  }
+
+  // The durable backups are retained. Hidden displacement directories are redundant
+  // only after the provenance lock is committed successfully.
+  await Promise.allSettled(candidates.map((candidate) => fs.rm(candidate.displaced, { recursive: true, force: true })));
+  return candidates.map((candidate) => candidate.change);
 }
 
 interface GitHubIssue {
@@ -349,6 +548,43 @@ export interface SkillSyncResult {
   changes: string[];
 }
 
+export interface SkillEvolutionRecordLocations {
+  statePath: string;
+  auditPath: string;
+}
+
+export async function recordSkillEvolutionFailure(
+  previous: SkillEvolutionState,
+  attemptAt: string,
+  error: unknown,
+  committedChanges: string[],
+  locations: SkillEvolutionRecordLocations = { statePath: STATE_PATH, auditPath: AUDIT_PATH },
+): Promise<SkillSyncResult> {
+  const message = error instanceof Error ? error.message : String(error);
+  const attemptedChanges = error instanceof SkillInstallTransactionError ? error.attemptedChanges : [];
+  const rollbackFailures = error instanceof SkillInstallTransactionError ? error.rollbackFailures : [];
+  const state: SkillEvolutionState = {
+    ...previous,
+    version: 1,
+    lastAttemptAt: attemptAt,
+    lastStatus: "failed",
+    lastMessage: message,
+    lastChanges: committedChanges,
+    lastAttemptedChanges: attemptedChanges,
+    lastRollbackFailures: rollbackFailures,
+  };
+  await writeJsonAtomic(locations.statePath, state);
+  await appendAudit({
+    timestamp: new Date().toISOString(),
+    status: "failed",
+    message,
+    committedChanges,
+    attemptedChanges,
+    rollbackFailures,
+  }, locations.auditPath);
+  return { status: "failed", message, changes: [...committedChanges, ...attemptedChanges] };
+}
+
 export async function syncTrustedSkills(force = false): Promise<SkillSyncResult> {
   const config = await loadConfig();
   await writeJsonAtomic(CONFIG_PATH, config);
@@ -358,18 +594,23 @@ export async function syncTrustedSkills(force = false): Promise<SkillSyncResult>
   }
   if (!config.enabled && !force) return { status: "skipped", message: "Skill evolution is disabled.", changes: [] };
 
-  const lock = await acquireLock();
-  if (!lock) return { status: "skipped", message: "Another Pi session is evolving skills.", changes: [] };
+  const lock = await acquireSkillEvolutionLock();
+  if (!lock) return {
+    status: "skipped",
+    message: `The skill-evolution lock exists. It fails closed; remove ${LOCK_PATH} only after verifying no sync is active.`,
+    changes: [],
+  };
   const attemptAt = new Date().toISOString();
   const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "pi-skill-evolution-"));
+  let committedChanges: string[] = [];
   try {
     const stagedLock = await stageTrustedSkills(config, tempHome);
-    const changes = await installStagedSkills(config, tempHome, stagedLock);
+    committedChanges = await installStagedSkills(config, tempHome, stagedLock);
     const issueCount = await syncAutoresearchIssueConcepts(config);
     await refreshKnowledgeIndex();
-    const status = changes.length > 0 ? "updated" : "unchanged";
-    const message = changes.length > 0
-      ? `Evolved ${changes.length} trusted skills and refreshed ${issueCount} autoresearch hypotheses.`
+    const status = committedChanges.length > 0 ? "updated" : "unchanged";
+    const message = committedChanges.length > 0
+      ? `Evolved ${committedChanges.length} trusted skills and refreshed ${issueCount} autoresearch hypotheses.`
       : `Trusted skills are current; refreshed ${issueCount} autoresearch hypotheses.`;
     const state: SkillEvolutionState = {
       version: 1,
@@ -377,27 +618,16 @@ export async function syncTrustedSkills(force = false): Promise<SkillSyncResult>
       lastSuccessAt: new Date().toISOString(),
       lastStatus: status,
       lastMessage: message,
-      lastChanges: changes,
+      lastChanges: committedChanges,
     };
     await writeJsonAtomic(STATE_PATH, state);
-    await appendAudit({ timestamp: state.lastSuccessAt, status, message, changes, trustedSources: config.trustedSources.map((item) => item.source) });
-    return { status, message, changes };
+    await appendAudit({ timestamp: state.lastSuccessAt, status, message, changes: committedChanges, trustedSources: config.trustedSources.map((item) => item.source) });
+    return { status, message, changes: committedChanges };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const state: SkillEvolutionState = {
-      ...previous,
-      version: 1,
-      lastAttemptAt: attemptAt,
-      lastStatus: "failed",
-      lastMessage: message,
-      lastChanges: [],
-    };
-    await writeJsonAtomic(STATE_PATH, state);
-    await appendAudit({ timestamp: new Date().toISOString(), status: "failed", message });
-    return { status: "failed", message, changes: [] };
+    return recordSkillEvolutionFailure(previous, attemptAt, error, committedChanges);
   } finally {
     await fs.rm(tempHome, { recursive: true, force: true });
-    await releaseLock(lock);
+    await releaseSkillEvolutionLock(lock);
   }
 }
 
@@ -408,7 +638,7 @@ export function getCommunityKnowledgePath(): string {
 export async function formatSkillEvolutionStatus(): Promise<string> {
   const config = await loadConfig();
   const state = await readJson<SkillEvolutionState>(STATE_PATH, { version: 1 });
-  return `- Enabled: ${config.enabled}\n- Interval: ${config.intervalHours}h\n- Trusted sources: ${config.trustedSources.map((item) => item.source).join(", ")}\n- Last attempt: ${state.lastAttemptAt ?? "never"}\n- Last success: ${state.lastSuccessAt ?? "never"}\n- Last status: ${state.lastStatus ?? "never"}\n- Message: ${state.lastMessage ?? "(none)"}\n- Audit: ${AUDIT_PATH}\n- Community concepts: ${COMMUNITY_KNOWLEDGE_PATH}`;
+  return `- Enabled: ${config.enabled}\n- Interval: ${config.intervalHours}h\n- Trusted sources: ${config.trustedSources.map((item) => item.source).join(", ")}\n- Last attempt: ${state.lastAttemptAt ?? "never"}\n- Last success: ${state.lastSuccessAt ?? "never"}\n- Last status: ${state.lastStatus ?? "never"}\n- Message: ${state.lastMessage ?? "(none)"}\n- Last committed changes: ${state.lastChanges?.join("; ") || "none"}\n- Last attempted changes: ${state.lastAttemptedChanges?.join("; ") || "none"}\n- Rollback failures: ${state.lastRollbackFailures?.join("; ") || "none"}\n- Audit: ${AUDIT_PATH}\n- Community concepts: ${COMMUNITY_KNOWLEDGE_PATH}`;
 }
 
 export function registerSkillEvolution(pi: ExtensionAPI): void {

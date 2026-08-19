@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/bsreeram08/pi-workbench/security/advisories/new
+    about: Report vulnerabilities privately; never disclose credentials in an issue.
+  - name: Support guidance
+    url: https://github.com/bsreeram08/pi-workbench/blob/main/SUPPORT.md
+    about: Read support and troubleshooting guidance before filing.

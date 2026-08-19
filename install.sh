@@ -1,10 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Install Sreeram's Pi Workbench.
+
+Usage: ./install.sh [--full] [--strict]
+
+  --full    Opt into the Ember theme, preference baseline, status line, and
+            trusted skill-evolution profile. Existing JSON values win except
+            that the active theme becomes Ember.
+  --strict  Require Bun and TypeScript and run every development check.
+  --help    Show this help.
+
+The default installation links Workbench, the framed editor, and the Ember
+file, but preserves the active theme and does not merge preferences, companion
+packages, or skill-evolution settings.
+EOF
+}
+
+FULL=0
+STRICT=0
+while (($# > 0)); do
+  case "$1" in
+    --full) FULL=1 ;;
+    --strict) STRICT=1 ;;
+    --help|-h) usage; exit 0 ;;
+    *) printf 'error: unknown argument: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 BACKUP_ROOT="$AGENT_DIR/backups/pi-workbench/$STAMP"
+PI_BIN=""
+BUN_BIN=""
+TSC_BIN=""
+COMMITTING=0
+ROLLBACK_TARGETS=()
+ROLLBACK_BACKUPS=()
+TEMP_FILES=()
 
 realpath_portable() {
   python3 - "$1" <<'PY'
@@ -13,25 +50,37 @@ print(os.path.realpath(sys.argv[1]))
 PY
 }
 
-backup_and_link() {
-  local source="$1"
-  local target="$2"
-  mkdir -p "$(dirname "$target")"
-
-  if [[ -e "$target" || -L "$target" ]]; then
-    if [[ "$(realpath_portable "$source")" == "$(realpath_portable "$target")" ]]; then
-      printf 'already linked: %s\n' "$target"
-      return
+rollback_links() {
+  local index target backup
+  for ((index=${#ROLLBACK_TARGETS[@]}-1; index>=0; index--)); do
+    target="${ROLLBACK_TARGETS[$index]}"
+    backup="${ROLLBACK_BACKUPS[$index]}"
+    if [[ -L "$target" ]]; then
+      rm -- "$target"
+    elif [[ -e "$target" ]]; then
+      printf 'warning: rollback left an unexpected non-symlink at %s; backup remains at %s\n' "$target" "$backup" >&2
+      continue
     fi
-    local backup="$BACKUP_ROOT/$(basename "$target")"
-    mkdir -p "$BACKUP_ROOT"
-    mv "$target" "$backup"
-    printf 'backed up: %s -> %s\n' "$target" "$backup"
-  fi
-
-  ln -s "$source" "$target"
-  printf 'linked: %s -> %s\n' "$target" "$source"
+    if [[ -n "$backup" && ( -e "$backup" || -L "$backup" ) ]]; then
+      mkdir -p "$(dirname "$target")"
+      mv -- "$backup" "$target"
+    fi
+  done
 }
+
+on_exit() {
+  local status="$1"
+  if ((status != 0 && COMMITTING == 1)); then
+    printf 'installation failed; restoring replaced links\n' >&2
+    rollback_links || true
+  fi
+  if ((${#TEMP_FILES[@]} > 0)); then
+    rm -f -- "${TEMP_FILES[@]}"
+  fi
+  return "$status"
+}
+trap 'on_exit "$?"' EXIT
+trap 'exit 130' HUP INT TERM
 
 for command in git node python3 pi; do
   if ! command -v "$command" >/dev/null 2>&1; then
@@ -39,105 +88,38 @@ for command in git node python3 pi; do
     exit 1
   fi
 done
-
-if [[ -d "$ROOT/.git" ]]; then
-  git -C "$ROOT" submodule update --init --recursive
+PI_BIN="$(command -v pi)"
+BUN_BIN="$(command -v bun 2>/dev/null || true)"
+TSC_BIN="$(command -v tsc 2>/dev/null || true)"
+if ((STRICT == 1)) && [[ -z "$BUN_BIN" || -z "$TSC_BIN" ]]; then
+  printf 'error: --strict requires bun and tsc on PATH\n' >&2
+  exit 1
 fi
 
-mkdir -p "$AGENT_DIR/extensions" "$AGENT_DIR/themes" "$AGENT_DIR/skill-evolution"
+CLEAN_ENV=(env -i "HOME=$HOME" "PATH=$PATH" "TMPDIR=${TMPDIR:-/tmp}" "PI_CODING_AGENT_DIR=$AGENT_DIR" "NO_COLOR=1")
 
-TARGET_EXTENSION="$AGENT_DIR/extensions/pi-workbench"
-if [[ "$(realpath_portable "$ROOT")" != "$(realpath_portable "$TARGET_EXTENSION")" ]]; then
-  backup_and_link "$ROOT" "$TARGET_EXTENSION"
-fi
-backup_and_link "$ROOT/setup/pi-look" "$AGENT_DIR/extensions/pi-look"
-backup_and_link "$ROOT/setup/themes/ember.json" "$AGENT_DIR/themes/ember.json"
+for required in "$ROOT/reprompter/SKILL.md" "$ROOT/reprompter/LICENSE"; do
+  if [[ ! -f "$required" ]]; then
+    printf 'error: required RePrompter submodule file is missing: %s\n' "$required" >&2
+    printf 'clone with --recurse-submodules or run: git submodule update --init --recursive\n' >&2
+    exit 1
+  fi
+done
 
-python3 - "$AGENT_DIR" "$ROOT" <<'PY'
-import json
-import os
-import pathlib
-import shutil
-import sys
-import tempfile
+CONFIG_ARGS=(--agent-dir "$AGENT_DIR" --root "$ROOT")
+if ((FULL == 1)); then CONFIG_ARGS+=(--full); fi
+python3 "$ROOT/scripts/install-config.py" preflight "${CONFIG_ARGS[@]}"
 
-agent_dir = pathlib.Path(sys.argv[1])
-root = pathlib.Path(sys.argv[2])
-defaults = root / "setup" / "defaults"
-
-
-def read_json(path, fallback):
-    try:
-        return json.loads(path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        return fallback
-
-
-def write_json(path, value, mode=None):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(value, handle, indent=2)
-            handle.write("\n")
-        if mode is not None:
-            os.chmod(temporary, mode)
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
-
-
-# Merge portable Pi defaults without deleting machine-specific settings.
-settings_path = agent_dir / "settings.json"
-settings = read_json(settings_path, {})
-baseline_settings = read_json(defaults / "settings.json", {})
-for key, value in baseline_settings.items():
-    if key == "packages":
-        settings[key] = list(dict.fromkeys([*(settings.get(key) or []), *value]))
-    else:
-        settings.setdefault(key, value)
-settings["theme"] = "ember"
-write_json(settings_path, settings)
-
-# Merge explicit preference baselines by stable id; local edits win.
-profile_path = agent_dir / "user-profile.json"
-profile = read_json(profile_path, {"version": 1, "preferences": []})
-baseline_profile = read_json(defaults / "user-profile.json", {"version": 1, "preferences": []})
-existing_ids = {item.get("id") for item in profile.get("preferences", []) if isinstance(item, dict)}
-for preference in baseline_profile.get("preferences", []):
-    if isinstance(preference, dict) and preference.get("id") not in existing_ids:
-        profile.setdefault("preferences", []).append(preference)
-write_json(profile_path, profile, 0o600)
-
-# Merge trusted skill sources while preserving local cadence and overrides.
-evolution_path = agent_dir / "skill-evolution" / "config.json"
-evolution = read_json(evolution_path, {})
-baseline_evolution = read_json(defaults / "skill-evolution.json", {})
-for key, value in baseline_evolution.items():
-    if key == "trustedSources":
-        current = evolution.get(key) if isinstance(evolution.get(key), list) else []
-        known = {item.get("source") for item in current if isinstance(item, dict)}
-        evolution[key] = [*current, *[item for item in value if item.get("source") not in known]]
-    else:
-        evolution.setdefault(key, value)
-write_json(evolution_path, evolution, 0o600)
-
-statusline_path = agent_dir / "statusline.json"
-if not statusline_path.exists():
-    shutil.copy2(defaults / "statusline.json", statusline_path)
-PY
-
-if command -v bun >/dev/null 2>&1; then
-  (cd "$ROOT" && bun test tests)
+if [[ -n "$BUN_BIN" ]]; then
+  (cd "$ROOT" && "${CLEAN_ENV[@]}" "$BUN_BIN" test tests)
 else
-  printf 'warning: bun is unavailable; skipped the Workbench test suite\n' >&2
+  printf 'warning: bun is unavailable; skipped the Workbench test suite (use --strict to require it)\n' >&2
 fi
 
-if command -v tsc >/dev/null 2>&1; then
-  (cd "$ROOT" && node scripts/typecheck.mjs)
+if [[ -n "$TSC_BIN" ]]; then
+  (cd "$ROOT" && "${CLEAN_ENV[@]}" node scripts/typecheck.mjs)
 else
-  printf 'warning: tsc is unavailable; skipped the strict TypeScript check\n' >&2
+  printf 'warning: tsc is unavailable; skipped the strict TypeScript check (use --strict to require it)\n' >&2
 fi
 
 SMOKE_OUT="$(mktemp)"
@@ -145,10 +127,10 @@ SMOKE_ERR="$(mktemp)"
 CHILD_SMOKE_OUT="$(mktemp)"
 CHILD_SMOKE_ERR="$(mktemp)"
 CHILD_SMOKE_MARKER="$(mktemp)"
-trap 'rm -f "$SMOKE_OUT" "$SMOKE_ERR" "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR" "$CHILD_SMOKE_MARKER"' EXIT
+TEMP_FILES+=("$SMOKE_OUT" "$SMOKE_ERR" "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR" "$CHILD_SMOKE_MARKER")
 
 printf '%s\n' '{"type":"get_commands","id":"commands"}' \
-  | PI_OFFLINE=1 pi --mode rpc --no-session --no-extensions --extension "$ROOT/index.ts" \
+  | "${CLEAN_ENV[@]}" PI_OFFLINE=1 "$PI_BIN" --mode rpc --no-session --no-extensions --extension "$ROOT/index.ts" \
     >"$SMOKE_OUT" 2>"$SMOKE_ERR"
 if grep -q 'extension_error' "$SMOKE_OUT" "$SMOKE_ERR"; then
   cat "$SMOKE_ERR" >&2
@@ -161,11 +143,12 @@ import json
 import sys
 
 responses = []
-for line in open(sys.argv[1]):
-    try:
-        responses.append(json.loads(line))
-    except json.JSONDecodeError:
-        pass
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        try:
+            responses.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
 command_response = next(
     (item for item in responses if item.get("type") == "response" and item.get("command") == "get_commands"),
     None,
@@ -182,9 +165,9 @@ if missing or unexpected:
 PY
 
 printf '%s\n' '{"type":"get_state","id":"state"}' \
-  | PI_OFFLINE=1 PI_WORKBENCH_AGENT=installer-smoke PI_WORKBENCH_PROJECT_ROOT="$ROOT" \
-    PI_WORKBENCH_CHILD_SMOKE_FILE="$CHILD_SMOKE_MARKER" pi --mode rpc --no-session --no-extensions --extension "$ROOT/child-tools.ts" \
-      --tools workbench_memory,qmd_search \
+  | "${CLEAN_ENV[@]}" PI_OFFLINE=1 PI_WORKBENCH_AGENT=installer-smoke PI_WORKBENCH_PROJECT_ROOT="$ROOT" \
+    PI_WORKBENCH_CHILD_SMOKE_FILE="$CHILD_SMOKE_MARKER" "$PI_BIN" --mode rpc --no-session --no-extensions \
+      --extension "$ROOT/child-tools.ts" --tools workbench_memory,qmd_search \
       >"$CHILD_SMOKE_OUT" 2>"$CHILD_SMOKE_ERR"
 if grep -q 'extension_error' "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR"; then
   cat "$CHILD_SMOKE_ERR" >&2
@@ -196,11 +179,12 @@ import json
 import sys
 
 responses = []
-for line in open(sys.argv[1]):
-    try:
-        responses.append(json.loads(line))
-    except json.JSONDecodeError:
-        pass
+with open(sys.argv[1], encoding="utf-8") as handle:
+    for line in handle:
+        try:
+            responses.append(json.loads(line))
+        except json.JSONDecodeError:
+            pass
 state = next(
     (item for item in responses if item.get("type") == "response" and item.get("command") == "get_state"),
     None,
@@ -208,9 +192,10 @@ state = next(
 if not state or not state.get("success"):
     raise SystemExit("error: Pi Workbench child memory/tool RPC smoke did not return a successful state response")
 try:
-    marker = json.load(open(sys.argv[2]))
+    with open(sys.argv[2], encoding="utf-8") as handle:
+        marker = json.load(handle)
 except (OSError, json.JSONDecodeError) as error:
-    raise SystemExit(f"error: Pi Workbench child tool registration marker is invalid: {error}")
+    raise SystemExit(f"error: Pi Workbench child tool registration marker is invalid: {error}") from error
 required_tools = {"workbench_memory", "qmd_search"}
 all_tools = set(marker.get("allTools", []))
 active_tools = set(marker.get("activeTools", []))
@@ -223,5 +208,48 @@ if marker.get("agentId") != "installer-smoke":
     raise SystemExit(f"error: child source-agent attribution failed: {marker.get('agentId')!r}")
 PY
 
-printf '\nPi Workbench installed in %s\n' "$AGENT_DIR"
-printf 'Run /reload in an existing Pi session, then /skills-evolve to initialize trusted skills.\n'
+backup_and_link() {
+  local source="$1"
+  local target="$2"
+  local backup=""
+  mkdir -p "$(dirname "$target")"
+
+  if [[ -e "$target" || -L "$target" ]]; then
+    if [[ "$(realpath_portable "$source")" == "$(realpath_portable "$target")" ]]; then
+      printf 'already linked: %s\n' "$target"
+      return
+    fi
+    backup="$BACKUP_ROOT/resources/$(basename "$target")"
+    mkdir -p "$(dirname "$backup")"
+    chmod 700 "$BACKUP_ROOT"
+    mv -- "$target" "$backup"
+    printf 'backed up: %s -> %s\n' "$target" "$backup"
+  fi
+
+  ROLLBACK_TARGETS+=("$target")
+  ROLLBACK_BACKUPS+=("$backup")
+  ln -s "$source" "$target"
+  printf 'linked: %s -> %s\n' "$target" "$source"
+}
+
+COMMITTING=1
+mkdir -p "$AGENT_DIR/extensions" "$AGENT_DIR/themes"
+TARGET_EXTENSION="$AGENT_DIR/extensions/pi-workbench"
+if [[ "$(realpath_portable "$ROOT")" != "$(realpath_portable "$TARGET_EXTENSION")" ]]; then
+  backup_and_link "$ROOT" "$TARGET_EXTENSION"
+fi
+backup_and_link "$ROOT/setup/pi-look" "$AGENT_DIR/extensions/pi-look"
+backup_and_link "$ROOT/setup/themes/ember.json" "$AGENT_DIR/themes/ember.json"
+python3 "$ROOT/scripts/install-config.py" apply "${CONFIG_ARGS[@]}" --backup-root "$BACKUP_ROOT"
+COMMITTING=0
+
+printf "\nSreeram's Pi Workbench installed in %s\n" "$AGENT_DIR"
+if ((FULL == 1)); then
+  printf 'Opinionated profile enabled. Existing JSON values were preserved except the active theme.\n'
+else
+  printf 'Safe default profile used; existing settings, preferences, and active theme were preserved.\n'
+fi
+if [[ -d "$BACKUP_ROOT" ]]; then
+  printf 'Backups: %s\n' "$BACKUP_ROOT"
+fi
+printf 'Run /reload in an existing Pi session. Run /skills-evolve only if you want to fetch trusted skills.\n'

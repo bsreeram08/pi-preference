@@ -260,7 +260,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
   });
 
   pi.registerShortcut("ctrl+down", {
-    description: "Focus Pi Workbench agent cards",
+    description: "Focus Sreeram's Pi Workbench agent cards",
     handler: () => dashboard.focusCards(),
   });
   pi.registerShortcut("ctrl+up", {
@@ -287,13 +287,13 @@ export default function piWorkbench(pi: ExtensionAPI) {
       let topic = explicitTopic;
       if (!topic && existing) {
         const changed = await ctx.ui.editor(
-          "Resume Pi Workbench",
+          "Resume Sreeram's Pi Workbench",
           `Existing topic: ${existing.topic}\n\nWhat changed, what did you learn, or what should the council reconsider?`,
         );
         if (changed === undefined) return;
         topic = changed.trim() ? `${existing.topic}\n\nNew user context:\n${changed.trim()}` : existing.topic;
       } else if (!topic) {
-        const entered = await ctx.ui.editor("Start Pi Workbench", "Describe the idea, problem, or project in your own words.");
+        const entered = await ctx.ui.editor("Start Sreeram's Pi Workbench", "Describe the idea, problem, or project in your own words.");
         if (!entered?.trim()) return;
         topic = entered.trim();
       }
@@ -322,7 +322,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
 
       dashboard.beginRun(`council-${Date.now()}`);
       const supervisor = new SupervisorClient(root, dashboard, pi);
-      const progress = makeProgress(ctx, "Pi Workbench — clarification");
+      const progress = makeProgress(ctx, "Sreeram's Pi Workbench — clarification");
       try {
         await supervisor.start();
         if (config.qmdEnabled) {
@@ -503,13 +503,13 @@ export default function piWorkbench(pi: ExtensionAPI) {
 
       const confirmed = await ctx.ui.confirm(
         "Begin opinionated implementation?",
-        `Pi Workbench will run ${config.parallelImplementationWorkers} isolated implementation workers, merge their work, review in parallel, and loop until tests pass or ${config.maxFixLoops} fix attempts are exhausted.`,
+        `Sreeram's Pi Workbench will run ${config.parallelImplementationWorkers} isolated implementation workers, merge their work, review in parallel, and loop until tests pass or ${config.maxFixLoops} fix attempts are exhausted.`,
       );
       if (!confirmed) return;
 
       dashboard.beginRun(`implementation-${Date.now()}`);
       const supervisor = new SupervisorClient(root, dashboard, pi);
-      const progress = makeProgress(ctx, "Pi Workbench — implementation");
+      const progress = makeProgress(ctx, "Sreeram's Pi Workbench — implementation");
       let workspaceGroup: Awaited<ReturnType<typeof createWorkerWorkspaces>> | undefined;
       try {
         await supervisor.start();
@@ -824,28 +824,28 @@ export default function piWorkbench(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("council-status", {
-    description: "Show the current project's Pi Workbench state and document paths",
+    description: "Show Sreeram's Pi Workbench state and document paths for the current project",
     handler: async (_args, ctx) => {
       const root = await findProjectRoot(ctx.cwd, exec);
       const paths = getProjectPaths(root);
       const session = await loadSession(paths);
       report(
         pi,
-        "Pi Workbench status",
+        "Sreeram's Pi Workbench status",
         `${formatSessionSummary(session)}\n\n- Intent: ${paths.intent}\n- Decisions: ${paths.decisions}\n- Plan: ${paths.implementationPlan}\n- Settings: ${path.join(paths.stateDir, "config.json")}`,
       );
     },
   });
 
   pi.registerCommand("council-settings", {
-    description: "Edit project-scoped Pi Workbench preferences",
+    description: "Edit project-scoped preferences for Sreeram's Pi Workbench",
     handler: async (_args, ctx) => {
       if (!ctx.hasUI) return;
       const root = await findProjectRoot(ctx.cwd, exec);
       const paths = getProjectPaths(root);
       await ensureProjectState(paths);
       const current = await loadConfig(paths);
-      const edited = await ctx.ui.editor("Pi Workbench project settings", JSON.stringify(current, null, 2));
+      const edited = await ctx.ui.editor("Sreeram's Pi Workbench project settings", JSON.stringify(current, null, 2));
       if (edited === undefined) return;
       try {
         const config = normalizeConfig(JSON.parse(edited));

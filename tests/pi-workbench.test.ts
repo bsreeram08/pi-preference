@@ -29,6 +29,7 @@ import {
 import { AgentDashboardState } from "../dashboard-state.ts";
 import { canDelegateSpecialists, parseSupervisorDecision } from "../supervisor.ts";
 import { DEFAULT_CONFIG, normalizeConfig } from "../config.ts";
+import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
 import { createResearchTracks, detectResearchMode, parseResearchAgentOutput } from "../research-prompts.ts";
 import {
   auditResearchEvidence,
@@ -215,6 +216,10 @@ describe("Pi workflow routing", () => {
 });
 
 describe("project settings", () => {
+  test("keeps network skill evolution opt-in without explicit configuration", () => {
+    expect(SKILL_EVOLUTION_ENABLED_BY_DEFAULT).toBe(false);
+  });
+
   test("normalizes unsafe and invalid values", () => {
     expect(normalizeConfig({
       maxCouncilAgents: 100,
