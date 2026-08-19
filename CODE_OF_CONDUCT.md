@@ -26,7 +26,7 @@ This code applies in repository issues, pull requests, reviews, discussions, and
 
 ## Reporting and enforcement
 
-Do not post a conduct report publicly. Use the repository's [private reporting channel](https://github.com/bsreeram08/pi-workbench/security/advisories/new) and prefix the title with **Conduct report**. This channel is also used for vulnerabilities because it provides a confidential conversation with the maintainer; a conduct report does not need to describe a software vulnerability.
+Do not post a conduct report publicly. Use the repository's [private reporting channel](https://github.com/bsreeram08/pi-preference/security/advisories/new) and prefix the title with **Conduct report**. This channel is also used for vulnerabilities because it provides a confidential conversation with the maintainer; a conduct report does not need to describe a software vulnerability.
 
 The maintainer may edit or remove contributions, lock conversations, issue warnings, or temporarily or permanently restrict participation when behavior is harmful. Reports will be handled as privately as practical, subject to safety and legal obligations. Deliberately false or retaliatory reports may themselves violate this code.
 

@@ -8,11 +8,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/bsreeram08/pi-workbench.git"
+    "url": "git+https://github.com/bsreeram08/pi-preference.git"
   },
-  "homepage": "https://github.com/bsreeram08/pi-workbench#readme",
+  "homepage": "https://github.com/bsreeram08/pi-preference#readme",
   "bugs": {
-    "url": "https://github.com/bsreeram08/pi-workbench/issues"
+    "url": "https://github.com/bsreeram08/pi-preference/issues"
   },
   "keywords": [
     "pi",

@@ -1,6 +1,6 @@
 # Sreeram's Pi Workbench
 
-[![CI](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml)
+[![CI](https://github.com/bsreeram08/pi-preference/actions/workflows/ci.yml/badge.svg)](https://github.com/bsreeram08/pi-preference/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FF8A4C.svg)](LICENSE)
 
 A preference-aware [Pi](https://github.com/earendil-works/pi) capability workbench for intent clarification, evidence-backed research, planning, delegated implementation, independent verification, durable agent memory, explicit preferences, and trusted skill evolution.
@@ -42,7 +42,7 @@ Clone over public HTTPS directly into Pi's extension directory:
 ```bash
 mkdir -p "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions"
 git clone --recurse-submodules \
-  https://github.com/bsreeram08/pi-workbench.git \
+  https://github.com/bsreeram08/pi-preference.git \
   "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 ./install.sh
