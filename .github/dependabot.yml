@@ -5,6 +5,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # TypeBox stays aligned with the pinned Pi runtime. Node/TypeScript majors are
+    # reviewed as compatibility changes rather than routine dependency bumps.
+    ignore:
+      - dependency-name: typebox
+        versions: [">1.3.7"]
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
 

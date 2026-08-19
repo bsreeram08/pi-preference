@@ -144,9 +144,10 @@ if (includeHistory) {
     scanText(file, contents);
   }
   const commits = git(["log", "--all", "--format=%H%x00%ae%x00%ce"]).trim().split("\n").filter(Boolean);
+  const isNoreply = (email) => email.endsWith("@users.noreply.github.com") || email.toLowerCase() === "noreply@github.com";
   for (const row of commits) {
     const [commit, authorEmail, committerEmail] = row.split("\0");
-    if (![authorEmail, committerEmail].every((email) => email.endsWith("@users.noreply.github.com"))) {
+    if (![authorEmail, committerEmail].every(isNoreply)) {
       fail(`commit metadata is not noreply-only: ${commit.slice(0, 12)}`);
     }
   }
