@@ -30,7 +30,7 @@ import { AgentDashboardState } from "../dashboard-state.ts";
 import { canDelegateSpecialists, parseSupervisorDecision } from "../supervisor.ts";
 import { DEFAULT_CONFIG, normalizeConfig } from "../config.ts";
 import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
-import { CHILD_MEMORY_ACTIONS } from "../child-tools.ts";
+import { CHILD_MEMORY_ACTIONS, createToolCallBudgetGuard } from "../child-tools.ts";
 import { createResearchTracks, detectResearchMode, parseResearchAgentOutput } from "../research-prompts.ts";
 import {
   auditResearchEvidence,
@@ -136,11 +136,19 @@ describe("Pi workflow routing", () => {
     expect(CHILD_MEMORY_ACTIONS).toContain("propose_consolidation");
   });
 
-  test("routes functional roles to capability-specific models", () => {
-    expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG)?.model).toBe("openai-codex/gpt-5.4-mini:medium");
-    expect(resolveWorkflowAgent("planner", DEFAULT_CONFIG)?.model).toBe("openai-codex/gpt-5.6-sol:high");
-    expect(resolveWorkflowAgent("implementer", DEFAULT_CONFIG)?.model).toBe("openai-codex/gpt-5.6-sol:medium");
-    expect(resolveWorkflowAgent("quality-reviewer", DEFAULT_CONFIG)?.model).toBe("openai-codex/gpt-5.6-terra:high");
+  test("hard-blocks Workbench child tools after the configured read-only limit", () => {
+    const consume = createToolCallBudgetGuard("2");
+    expect(consume()).toBe(true);
+    expect(consume()).toBe(true);
+    expect(consume()).toBe(false);
+    expect(consume()).toBe(false);
+    expect(createToolCallBudgetGuard("")()).toBe(true);
+  });
+
+  test("routes workflow agents from task effort rather than fixed role assignments", () => {
+    expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Find one symbol.")?.model).toBe("openai-codex/gpt-5.3-codex-spark:low");
+    expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Investigate a hard cross-cutting concurrency root cause across services.")?.model).toBe("openai-codex/gpt-5.6-sol:high");
+    expect(resolveWorkflowAgent("planner", DEFAULT_CONFIG, "Draft a bounded local rename plan.", "light")?.model).toBe("openai-codex/gpt-5.3-codex-spark:low");
     expect(getWorkflowAgentProfile("task implementer")?.id).toBe("task-implementer");
   });
 
@@ -254,6 +262,7 @@ describe("project settings", () => {
       workflowPlanningModel: "openai-codex/gpt-5.6-sol:high",
       workflowDeepModel: "openai-codex/gpt-5.6-sol:medium",
       workflowReviewModel: "openai-codex/gpt-5.6-terra:high",
+      modelRoutingPolicy: "balanced",
     });
   });
 

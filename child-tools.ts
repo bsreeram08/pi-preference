@@ -24,6 +24,18 @@ const BROWSER_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "
 
 export const CHILD_MEMORY_ACTIONS = ["recall", "remember", "propose_shared", "propose_consolidation", "forget"] as const;
 
+export function createToolCallBudgetGuard(rawBudget: string | undefined = process.env.PI_WORKBENCH_TOOL_BUDGET): () => boolean {
+  const parsed = rawBudget?.trim() ? Number(rawBudget) : Number.NaN;
+  const limit = Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  let used = 0;
+  return () => {
+    if (limit === undefined) return true;
+    if (used >= limit) return false;
+    used++;
+    return true;
+  };
+}
+
 function truncate(text: string): string {
   if (Buffer.byteLength(text, "utf8") <= MAX_OUTPUT) return text;
   let result = text.slice(0, MAX_OUTPUT);
@@ -35,6 +47,7 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
   const agentDir = getAgentDir();
   const agentId = workbenchAgentIdFromEnvironment("specialist");
   const memoryStores = new Map<string, WorkbenchMemoryStore>();
+  const consumeToolCall = createToolCallBudgetGuard();
 
   function memoryStoreFor(cwd: string): WorkbenchMemoryStore {
     const requestedRoot = process.env.PI_WORKBENCH_PROJECT_ROOT?.trim() || cwd;
@@ -63,6 +76,12 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
   });
 
   pi.on("tool_call", (event, ctx) => {
+    if (!consumeToolCall()) {
+      return {
+        block: true,
+        reason: "Read-only tool-call budget exhausted. Stop calling tools and return the best supported synthesis, unresolved uncertainty, and exact next verification step.",
+      };
+    }
     const roots = memoryStoreFor(ctx.cwd).roots;
     let blocked = false;
     if (isToolCallEventType("bash", event)) {

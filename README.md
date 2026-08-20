@@ -22,6 +22,7 @@ A preference-aware [Pi](https://github.com/earendil-works/pi) capability workben
 11. Explicit user preferences survive sessions and outrank generic workflow defaults.
 12. New and updated skills from explicitly trusted sources are staged, validated, backed up, and audit-logged before adoption.
 13. Agent memory is isolated by default, shared only through Coordinator review, provenance-aware, bounded, forgettable, and always treated as fallible data.
+14. Model routing is decided per task lane from complexity, uncertainty, risk, breadth, and verification cost; role names never lock a task to one model.
 
 ## Requirements
 
@@ -118,6 +119,7 @@ During a Workbench run, the footer shows the Supervisor and delegated agents as 
 | Command | Purpose |
 |---|---|
 | `/delegate` | Show the specialist roster/current plan, or run `/delegate <agent> <task>` |
+| `/model-routing [status\|balanced\|economy\|quality\|fixed <model-or-alias>\|reset]` | Show or change the session-only child-routing policy without writing global model settings |
 | `/plan [task]` | Interview, discover, analyze requirements, plan, and run Quality + Technical review |
 | `/start-work` | Execute the approved plan through the Execution Manager, Implementer, review, fixes, and verification |
 | `/autopilot [task]` | Let the Coordinator autonomously plan, implement, review, and verify a task |
@@ -232,11 +234,12 @@ Defaults in `config.json`:
   "workflowFastModel": "openai-codex/gpt-5.4-mini:medium",
   "workflowPlanningModel": "openai-codex/gpt-5.6-sol:high",
   "workflowDeepModel": "openai-codex/gpt-5.6-sol:medium",
-  "workflowReviewModel": "openai-codex/gpt-5.6-terra:high"
+  "workflowReviewModel": "openai-codex/gpt-5.6-terra:high",
+  "modelRoutingPolicy": "balanced"
 }
 ```
 
-These model identifiers are opinionated routing defaults, not bundled credentials. Edit `.pi/pi-workbench/config.json` or use `/council-settings` to select models available from your configured Pi providers; setting an optional workflow/research model to `null` lets the child process use its normal fallback.
+`modelRoutingPolicy` is the durable project default and accepts `balanced`, `economy`, or `quality`; the shipped default is balanced. The older `workflowFastModel`, `workflowPlanningModel`, `workflowDeepModel`, and `workflowReviewModel` keys remain normalized for backward-compatible project files, but workflow delegation now routes each lane from the task rather than assigning models by role. Research model keys retain their existing subsystem behavior. Model identifiers are routing defaults, not bundled credentials.
 
 ## Research retrieval
 
@@ -255,7 +258,13 @@ API failures and skipped providers are returned with provenance. Search snippets
 
 ## Adaptive capability system
 
-Pi's native skill catalogue remains the source of capabilities. Workbench child agents no longer disable skills: each specialist sees skill descriptions and reads only the matching `SKILL.md` files on demand. Routing adds three contextual concept packs:
+Pi's native skill catalogue remains the source of capabilities. Workbench child agents no longer disable skills: each specialist sees skill descriptions and reads only the matching `SKILL.md` files on demand.
+
+Adaptive model routing uses a compact three-effort interface. Under balanced routing, light tasks use `openai-codex/gpt-5.3-codex-spark:low`, standard tasks use `openai-codex/gpt-5.6-terra:medium`, and heavy tasks use `openai-codex/gpt-5.6-sol:high`. Economy shifts standard/heavy work down where safe; quality starts at Terra and promotes standard work to Sol. Visual/image/UI/rendering work never uses Spark. Read-only children receive enforced stop-and-synthesize budgets of 8 turns/30 tools, 16/60, or 30/120; Workbench blocks excess tool calls and allows one final synthesis turn, while mutation-capable workers remain uncapped.
+
+Use `/model-routing` for status or a session-only override; fixed aliases are `spark`, `luna`, `terra`, and `sol`, and explicit fixed routes must use an available `openai-codex/<model>[:low|medium|high]` registry entry (an omitted suffix becomes `:medium`). Exact standalone directives such as `use sol for everything` or `use sol for everything this session` set a fixed route for delegated children. The state and receipts are persisted as TUI-only custom session entries, never added to model context, so new sessions return to the durable project policy. Main Pi remains unchanged because Pi 0.84.2's public model setter also persists global defaults; to fix the parent without changing settings, launch the session with `pi --model openai-codex/gpt-5.6-sol --thinking high`. Both native `pi-subagents` and `delegate_task` receive compact routing guidance and pre-launch receipts. Workbench does not parse or rewrite `workflowScript` source.
+
+Routing also adds three contextual concept packs:
 
 - **Engineering** — alignment, ubiquitous language, small feedback loops, TDD, diagnosis, deep modules, and Standards-vs-Spec review.
 - **Design** — Emil Kowalski's restraint, invisible edge cases, purposeful/interruptible motion, accessibility, and real-input verification for user-facing work.
