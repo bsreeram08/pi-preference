@@ -1,3 +1,4 @@
 {
-  "theme": "ember"
+  "theme": "ember",
+  "quietStartup": true
 }
