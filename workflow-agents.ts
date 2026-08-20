@@ -1,4 +1,5 @@
 import type { WorkbenchConfig } from "./config.ts";
+import { routeTask, type ModelRoutingState, type RoutingEffort } from "./routing.ts";
 import type { AgentSpec } from "./types.ts";
 
 export type WorkflowModelTier = "fast" | "planning" | "deep" | "review";
@@ -127,17 +128,6 @@ const EXTERNAL_RESEARCH_TRIGGERS = [
   "standard",
 ];
 
-function modelForTier(config: WorkbenchConfig, tier: WorkflowModelTier): string | undefined {
-  const model = tier === "fast"
-    ? config.workflowFastModel
-    : tier === "planning"
-      ? config.workflowPlanningModel
-      : tier === "review"
-        ? config.workflowReviewModel
-        : config.workflowDeepModel;
-  return model ?? undefined;
-}
-
 export function listWorkflowAgentProfiles(): WorkflowAgentProfile[] {
   return WORKFLOW_AGENTS.map((agent) => ({ ...agent, triggers: [...agent.triggers] }));
 }
@@ -148,10 +138,17 @@ export function getWorkflowAgentProfile(id: string): WorkflowAgentProfile | unde
   return agent ? { ...agent, triggers: [...agent.triggers] } : undefined;
 }
 
-export function resolveWorkflowAgent(id: string, config: WorkbenchConfig): WorkflowAgentProfile | undefined {
+export function resolveWorkflowAgent(
+  id: string,
+  config: WorkbenchConfig,
+  task = "",
+  effort: RoutingEffort = "auto",
+  routingState: ModelRoutingState = { policy: config.modelRoutingPolicy },
+): WorkflowAgentProfile | undefined {
   const profile = getWorkflowAgentProfile(id);
   if (!profile) return undefined;
-  return { ...profile, model: modelForTier(config, profile.tier) };
+  const route = routeTask({ task, role: profile.id, effort, policy: routingState, readOnly: profile.readOnly });
+  return { ...profile, model: route.model };
 }
 
 export function selectPlanningDiscoveryAgentIds(task: string): WorkflowAgentId[] {
@@ -170,9 +167,8 @@ export function validateParallelWorkflowAgents(profiles: WorkflowAgentProfile[])
 
 export function formatWorkflowRoster(config: WorkbenchConfig): string {
   const rows = WORKFLOW_AGENTS.map((profile) => {
-    const model = modelForTier(config, profile.tier) ?? "inherit current default";
     const access = profile.readOnly ? "read-only" : "writes";
-    return `- **${profile.title}** — ${access}; \`${model}\`\n  ${profile.description}`;
+    return `- **${profile.title}** — ${access}; adaptive ${config.modelRoutingPolicy} route chosen from each task lane\n  ${profile.description}`;
   });
   return [
     "- **Coordinator — Main Pi** — coordinates the workflow in the current Pi session.",

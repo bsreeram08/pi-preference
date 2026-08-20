@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added task-driven adaptive model routing with balanced, economy, quality, and session-only fixed child policies restored from custom session entries without changing global model settings.
+- Added per-lane `delegate_task` effort controls, TUI-only actual route receipts, enforced read-only tool/turn stop-and-synthesize budgets, and native `pi-subagents` guidance plus conservative non-rewriting tool-call defaults.
+- Added `/model-routing`, exact natural-language session directives, compact footer status, TUI-only zero-context route receipts, legacy config normalization, and focused pure routing tests.
 - Adapted selected AgentMemory concepts into the existing local Workbench store: deterministic weighted recall with diagnostics, integrity-checked explicit-access sidecars, review-gated derived consolidation proposals, and versioned dry-run/review/apply memory transfer. No AgentMemory/iii runtime, daemon, network provider, automatic capture/consolidation, or second memory injection path was added.
 - Added a committed validate-only capability manifest for nine packages, four extensions, and Ember, with hard runtime exclusions for `pi-autoresearch` and `@dietrichgebert/ponytail`; the checker reports drift without installing, removing, enabling, starting, loading, or fetching resources.
 - Added focused memory ranking/access/consolidation/import safety tests, including process-kill visibility recovery and exact-shape rejection, plus capability schema/drift/exclusion/path-binding/no-mutation tests.

@@ -42,6 +42,27 @@
       "context": "Applies to Pi's global orchestration and user-facing capability system.",
       "createdAt": "2026-08-18T13:55:16.020Z",
       "updatedAt": "2026-08-18T13:55:16.020Z"
+    },
+    {
+      "id": "route-subagents-dynamically-before-l-mt1lsce3",
+      "statement": "Route subagents dynamically before launch using task complexity, uncertainty, risk, and role as signals; default to the cheapest model likely to succeed, promote hard work proactively, and show a one-line model/thinking/reason receipt.",
+      "context": "Applies to Pi delegation and Workbench workflows; balanced quality/quota policy.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "support-session-only-child-model-rou-mt1mseji",
+      "statement": "Support session-only child model-routing overrides through both natural language (for example, ‘use Sol for everything this session’) and an explicit command/status surface; session overrides must not replace the durable balanced default.",
+      "context": "Applies automatically to delegated children. When Main Pi must also use the fixed model, launch the session with Pi's --model/--thinking flags so global defaults are not rewritten.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
+    },
+    {
+      "id": "for-cmux-notify-on-overall-asynchron-mt1lsce6",
+      "statement": "For cmux, notify on overall asynchronous workflow completion and blockers/needs-attention, while suppressing routine per-child subagent completion notifications.",
+      "context": "Avoid notification spam while preserving actionable background-work alerts.",
+      "createdAt": "2026-08-18T00:00:00.000Z",
+      "updatedAt": "2026-08-18T00:00:00.000Z"
     }
   ]
 }

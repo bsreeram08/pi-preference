@@ -20,6 +20,7 @@ export interface AgentRunContext {
   groupTitle?: string;
   jobId?: string;
   memoryProjectRoot?: string;
+  budget?: { turns: number; tools: number };
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -178,9 +179,24 @@ async function runPiAgent(
             ...process.env,
             PI_WORKBENCH_AGENT: agent.id,
             PI_WORKBENCH_PROJECT_ROOT: runContext?.memoryProjectRoot ?? projectRoot,
+            PI_WORKBENCH_TOOL_BUDGET: runContext?.budget ? String(runContext.budget.tools) : "",
           },
         });
         activeChild = child;
+        const budget = runContext?.budget;
+        let assistantTurns = 0;
+        let toolCalls = 0;
+        let synthesisQueued = false;
+        let budgetFailure: string | undefined;
+        const requestSynthesis = (reason: string) => {
+          if (synthesisQueued) return;
+          synthesisQueued = true;
+          sendRpc(child, {
+            type: "steer",
+            message: `Read-only execution budget is nearly exhausted (${reason}). Stop exploring and return the best supported synthesis now. State unresolved uncertainty and the exact next verification step; do not call more tools.`,
+          });
+          runContext?.dashboard?.updateJob(jobId, { status: "steering", latestActivity: "Budget synthesis requested" });
+        };
         let stdoutBuffer = "";
         const decoder = new StringDecoder("utf8");
         let stderr = "";
@@ -192,14 +208,15 @@ async function runPiAgent(
         const finish = (code: number, error?: string) => {
           if (settled) return;
           settled = true;
-          const status = cancelled ? "cancelled" : code === 0 ? "completed" : "failed";
+          const effectiveCode = error && code === 0 ? 1 : code;
+          const status = cancelled ? "cancelled" : effectiveCode === 0 ? "completed" : "failed";
           runContext?.dashboard?.finishJob(jobId, status, {
             output: truncate(latestAssistant || currentAssistant || error || stderr),
-            error: error || (code === 0 ? undefined : stderr || `Agent exited with code ${code}`),
-            exitCode: code,
+            error: error || (effectiveCode === 0 ? undefined : stderr || `Agent exited with code ${effectiveCode}`),
+            exitCode: effectiveCode,
             latestActivity: status,
           });
-          resolve({ agentId: agent.id, title: agent.title, output: truncate(latestAssistant || currentAssistant || stderr || "(agent produced no text output)"), exitCode: code, error: error || (code === 0 ? undefined : stderr) });
+          resolve({ agentId: agent.id, title: agent.title, output: truncate(latestAssistant || currentAssistant || stderr || "(agent produced no text output)"), exitCode: effectiveCode, error: error || (effectiveCode === 0 ? undefined : stderr) });
         };
         const processLine = (line: string) => {
           if (!line.trim()) return;
@@ -222,7 +239,20 @@ async function runPiAgent(
               runContext?.dashboard?.addTranscript(jobId, { kind: "assistant", text, timestamp: Date.now() });
               runContext?.dashboard?.updateJob(jobId, { output: truncate(text), latestActivity: "Assistant message complete" });
             }
+            if (event.message.role === "assistant" && budget) {
+              assistantTurns++;
+              if (assistantTurns >= budget.turns) requestSynthesis(`${assistantTurns}/${budget.turns} assistant turns used`);
+              if (assistantTurns > budget.turns + 1 && !budgetFailure) {
+                budgetFailure = `Read-only assistant-turn budget exceeded (${budget.turns} turns plus one synthesis turn).`;
+                sendRpc(child, { type: "abort" });
+                setTimeout(() => signalProcessGroup(child, "SIGTERM"), 1500).unref();
+              }
+            }
           } else if (event.type === "tool_execution_start") {
+            toolCalls++;
+            if (budget && toolCalls >= Math.max(1, budget.tools - 5)) {
+              requestSynthesis(`${Math.min(toolCalls, budget.tools)}/${budget.tools} tool calls used`);
+            }
             const args = (event.args ?? {}) as Record<string, unknown>;
             const discovered = discoverFilesAndTests(event.toolName ?? "tool", args, args.command as string | undefined);
             const files = [...new Set([...(job?.files ?? []), ...discovered.files])];
@@ -264,7 +294,7 @@ async function runPiAgent(
           stdoutBuffer += decoder.end();
           if (stdoutBuffer.trim()) processLine(stdoutBuffer);
           exitCode = code ?? 1;
-          finish(exitCode);
+          finish(exitCode, budgetFailure);
         });
         activeSend = (message: string) => sendRpc(child, { type: "steer", message });
         sendRpc(child, { type: "prompt", id: `initial-${jobId}`, message: `Task: ${task}` });

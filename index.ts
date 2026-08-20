@@ -44,6 +44,7 @@ import { registerSkillEvolution } from "./skill-evolution.ts";
 import { registerUserPreferences } from "./user-preferences.ts";
 import { registerWorkbenchMemory } from "./memory.ts";
 import { registerUsageCommand } from "./usage.ts";
+import { registerModelRouting } from "./model-routing.ts";
 import type { AgentResult, AgentSpec, CouncilSession, Exec } from "./types.ts";
 import { canDelegateSpecialists, SupervisorClient, type SupervisorDecision } from "./supervisor.ts";
 import {
@@ -228,6 +229,7 @@ Return:
 export default function piWorkbench(pi: ExtensionAPI) {
   const exec: Exec = (command, args, options) => pi.exec(command, args, options);
   const dashboard = new WorkbenchDashboardController(pi);
+  const modelRouting = registerModelRouting(pi, (title, body) => report(pi, title, body));
 
   registerUserPreferences(pi);
   registerWorkbenchMemory(pi, {
@@ -870,6 +872,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
     dashboard,
     reprompterPath: REPROMPTER_SKILL,
     report: (title, body) => report(pi, title, body),
+    getRoutingState: () => modelRouting.getState(),
   });
 
   pi.registerTool({

@@ -47,14 +47,24 @@ import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { ensureProjectState, findProjectRoot, getProjectPaths } from "./project.ts";
 import { getCommunityKnowledgePath } from "./skill-evolution.ts";
 import { runSingleAgent } from "./subagents.ts";
-import type { AgentResult, AgentSpec, Exec } from "./types.ts";
+import { MODEL_ROUTING_RECEIPT_ENTRY } from "./model-routing.ts";
+import type { AgentResult, Exec } from "./types.ts";
 import { formatAgentResults } from "./prompts.ts";
+import {
+  formatRoutingReceipt,
+  readOnlyBudgetGuidance,
+  routeTask,
+  type ModelRoute,
+  type ModelRoutingState,
+  type RoutingEffort,
+} from "./routing.ts";
 
 interface WorkflowDependencies {
   exec: Exec;
   dashboard: WorkbenchDashboardController;
   reprompterPath: string;
   report(title: string, body: string): void;
+  getRoutingState(): ModelRoutingState;
 }
 
 interface Progress {
@@ -71,11 +81,17 @@ interface PlanningResult {
 interface DelegationToolDetails {
   mode: "single" | "parallel";
   results: AgentResult[];
+  routes: Array<{ role: WorkflowAgentId; receipt: string; route: ModelRoute }>;
 }
+
+const RoutingEffortSchema = StringEnum(["auto", "light", "standard", "heavy"] as const, {
+  description: "Parent-judged effort. auto uses the conservative deterministic classifier.",
+});
 
 const TaskItemSchema = Type.Object({
   agent: StringEnum(WORKFLOW_AGENT_IDS, { description: "Specialized workflow agent" }),
   task: Type.String({ description: "Focused task with expected output and success criteria" }),
+  effort: Type.Optional(RoutingEffortSchema),
 });
 
 function now(): string {
@@ -147,7 +163,7 @@ function renderAgentResult(result: AgentResult): string {
 }
 
 export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDependencies): void {
-  const { dashboard, exec, reprompterPath, report } = dependencies;
+  const { dashboard, exec, reprompterPath, report, getRoutingState } = dependencies;
   const communityKnowledgePath = getCommunityKnowledgePath();
 
   async function resolveProject(ctx: ExtensionContext): Promise<{
@@ -173,24 +189,48 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     groupTitle: string,
     jobId: string,
     signal?: AbortSignal,
+    effort: RoutingEffort = "auto",
   ): Promise<AgentResult> {
-    const agent = resolveWorkflowAgent(role, config);
+    const base = getWorkflowAgentProfile(role);
+    if (!base) throw new Error(`Unknown workflow agent: ${role}`);
+    const route = routeTask({
+      task: delegatedTask,
+      role,
+      effort,
+      policy: getRoutingState(),
+      readOnly: base.readOnly,
+    });
+    const agent = resolveWorkflowAgent(role, config, delegatedTask, effort, getRoutingState());
     if (!agent) throw new Error(`Unknown workflow agent: ${role}`);
-    return runSingleAgent(
+    const receipt = formatRoutingReceipt(agent.title, route);
+    pi.appendEntry(MODEL_ROUTING_RECEIPT_ENTRY, { content: receipt });
+    progress.update(receipt);
+    const guidance = readOnlyBudgetGuidance(route);
+    const result = await runSingleAgent(
       root,
       agent,
       buildWorkflowSystemPrompt(agent, reprompterPath, userTask, communityKnowledgePath),
-      delegatedTask,
+      guidance ? `${guidance}\n\n${delegatedTask}` : delegatedTask,
       signal,
       progress.update,
-      { dashboard, groupId, groupTitle, jobId },
+      { dashboard, groupId, groupTitle, jobId, budget: route.budget },
     );
+    return {
+      ...result,
+      routing: {
+        effort: route.effort,
+        model: route.model,
+        thinking: route.thinking,
+        reason: route.reason,
+        ...(route.budget ? { budget: route.budget } : {}),
+      },
+    };
   }
 
   async function runRoleBatch(
     root: string,
     config: WorkbenchConfig,
-    tasks: Array<{ role: WorkflowAgentId; task: string }>,
+    tasks: Array<{ role: WorkflowAgentId; task: string; effort?: RoutingEffort }>,
     userTask: string,
     progress: Progress,
     groupId: string,
@@ -207,7 +247,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     });
     const parallelError = tasks.length > 1 ? validateParallelWorkflowAgents(profiles) : undefined;
     if (parallelError) throw new Error(parallelError);
-    return Promise.all(tasks.map(({ role, task }, index) => runRole(
+    return Promise.all(tasks.map(({ role, task, effort }, index) => runRole(
       root,
       config,
       role,
@@ -218,6 +258,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       groupTitle,
       agentJobId(groupId, role, index + 1),
       signal,
+      effort,
     )));
   }
 
@@ -481,17 +522,6 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     );
     await writeWorkflowRunArtifact(workflowPaths, state.id, "implementation-1.md", implementation.output);
 
-    const verifierBase = resolveWorkflowAgent("quality-reviewer", config);
-    if (!verifierBase) throw new Error("Quality Reviewer model route is unavailable for independent verification.");
-    const verifier: AgentSpec = {
-      ...verifierBase,
-      id: "workflow-verifier",
-      title: "Independent Verification Gate",
-      description: "Runs canonical checks independently and refuses unsupported completion claims.",
-      readOnly: true,
-      allowBash: true,
-    };
-
     for (let attempt = 0; attempt <= config.workflowMaxFixLoops; attempt++) {
       const cycle = attempt + 1;
       state.execution.attempts = cycle;
@@ -515,19 +545,17 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       await writeWorkflowRunArtifact(workflowPaths, state.id, `reviews-${cycle}.md`, reviewsText);
 
       progress.update(`verification cycle ${cycle}: canonical checks`);
-      const verification = await runSingleAgent(
+      const verificationTask = buildIndependentVerificationTask(state.task, state.plan, implementation.output);
+      const verification = await runRole(
         root,
-        verifier,
-        buildWorkflowSystemPrompt(verifierBase, reprompterPath, state.task, communityKnowledgePath),
-        buildIndependentVerificationTask(state.task, state.plan, implementation.output),
-        undefined,
-        progress.update,
-        {
-          dashboard,
-          groupId: `execution-verification-${cycle}`,
-          groupTitle: `Verification ${cycle}`,
-          jobId: agentJobId("verification", "gate", cycle),
-        },
+        config,
+        "quality-reviewer",
+        state.task,
+        verificationTask,
+        progress,
+        `execution-verification-${cycle}`,
+        `Verification ${cycle}`,
+        agentJobId("verification", "gate", cycle),
       );
       await writeWorkflowRunArtifact(workflowPaths, state.id, `verification-${cycle}.md`, verification.output);
 
@@ -690,16 +718,18 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   pi.registerTool({
     name: "delegate_task",
     label: "Delegate Task",
-    description: "Delegate a focused task to one named specialist or run multiple read-only specialists in parallel. Write-capable agents must run alone. Output is capped by the Workbench subagent runner at 50KB per agent.",
+    description: "Delegate a focused task with an adaptive per-lane model route, or run multiple independently routed read-only specialists in parallel. Write-capable agents must run alone. Output is capped at 50KB per agent.",
     promptSnippet: "Delegate focused work to Pi's specialized workflow agents",
     promptGuidelines: [
       "Use delegate_task when isolated specialist context or independent parallel analysis materially improves a complex task; keep simple work in the main Pi agent.",
       "Main Pi acts as Coordinator: delegate bounded outcomes with context and success criteria, then verify returned claims against the actual project.",
-      "Before delegating, choose a named role by capability rather than by model. Never run Implementer or Task Implementer in a parallel delegate_task batch.",
+      "Before delegating, classify every lane from complexity, uncertainty, risk, breadth, and verification cost. Role is only a prior: hard scout/recon work may require Sol. Set effort explicitly when you have made that judgment; otherwise use auto.",
+      "Show the pre-launch route receipt. Never use Spark for visual/image work. Never run Implementer or Task Implementer in a parallel delegate_task batch or hard-cap mutation-capable work.",
     ],
     parameters: Type.Object({
       agent: Type.Optional(StringEnum(WORKFLOW_AGENT_IDS, { description: "Agent for single delegation" })),
       task: Type.Optional(Type.String({ description: "Task for single delegation" })),
+      effort: Type.Optional(RoutingEffortSchema),
       tasks: Type.Optional(Type.Array(TaskItemSchema, { minItems: 1, maxItems: 6, description: "Read-only tasks to run in parallel" })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<DelegationToolDetails>> {
@@ -715,14 +745,19 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           const profiles = params.tasks.map((item) => resolveWorkflowAgent(item.agent, project.config)).filter((item): item is WorkflowAgentProfile => Boolean(item));
           const safetyError = validateParallelWorkflowAgents(profiles);
           if (safetyError) throw new Error(safetyError);
+          const routes = params.tasks.map((item) => {
+            const profile = getWorkflowAgentProfile(item.agent)!;
+            const route = routeTask({ task: item.task, role: item.agent, effort: item.effort ?? "auto", policy: getRoutingState(), readOnly: profile.readOnly });
+            return { role: item.agent, route, receipt: formatRoutingReceipt(profile.title, route) };
+          });
           onUpdate?.({
-            content: [{ type: "text", text: `Running ${params.tasks.length} read-only specialists in parallel…` }],
-            details: { mode: "parallel", results: [] },
+            content: [{ type: "text", text: "Delegation in progress." }],
+            details: { mode: "parallel", results: [], routes },
           });
           const results = await runRoleBatch(
             project.root,
             project.config,
-            params.tasks.map((item) => ({ role: item.agent, task: item.task })),
+            params.tasks.map((item) => ({ role: item.agent, task: item.task, effort: item.effort })),
             params.tasks.map((item) => item.task).join("\n"),
             progress,
             `tool-parallel-${Date.now()}`,
@@ -731,16 +766,18 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           );
           return {
             content: [{ type: "text", text: formatAgentResults(results) }],
-            details: { mode: "parallel", results },
+            details: { mode: "parallel", results, routes },
           };
         }
         const role = params.agent as WorkflowAgentId;
         const profile = resolveWorkflowAgent(role, project.config);
         if (!profile) throw new Error(`Unknown workflow agent: ${String(params.agent)}`);
         const task = params.task ?? "";
+        const route = routeTask({ task, role, effort: params.effort ?? "auto", policy: getRoutingState(), readOnly: profile.readOnly });
+        const routes = [{ role, route, receipt: formatRoutingReceipt(profile.title, route) }];
         onUpdate?.({
-          content: [{ type: "text", text: `${profile.title} is working…` }],
-          details: { mode: "single", results: [] },
+          content: [{ type: "text", text: "Delegation in progress." }],
+          details: { mode: "single", results: [], routes },
         });
         const result = await runRole(
           project.root,
@@ -753,8 +790,9 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           "Delegation",
           agentJobId("tool", role, Date.now()),
           signal,
+          params.effort ?? "auto",
         );
-        return { content: [{ type: "text", text: renderAgentResult(result) }], details: { mode: "single", results: [result] } };
+        return { content: [{ type: "text", text: renderAgentResult(result) }], details: { mode: "single", results: [result], routes } };
       } finally {
         progress.clear();
         if (ownsRun) dashboard.endRun();
@@ -767,9 +805,11 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       return new Text(`${theme.fg("toolTitle", theme.bold("delegate_task "))}${theme.fg("accent", args.agent ?? "agent")}${theme.fg("dim", ` ${shortened(args.task ?? "")}`)}`, 0, 0);
     },
     renderResult(result, { isPartial }, theme) {
-      const text = result.content.find((item) => item.type === "text");
-      if (isPartial) return new Text(theme.fg("warning", text?.type === "text" ? text.text : "Delegating…"), 0, 0);
-      const details = result.details as { results?: AgentResult[] } | undefined;
+      const details = result.details as DelegationToolDetails | undefined;
+      if (isPartial) {
+        const receipts = details?.routes?.map((item) => item.receipt).join("\n");
+        return new Text(theme.fg("warning", receipts || "Delegating…"), 0, 0);
+      }
       const results = details?.results ?? [];
       const succeeded = results.filter((item) => item.exitCode === 0).length;
       return new Text(

@@ -17,6 +17,13 @@ export interface AgentResult {
   output: string;
   exitCode: number;
   error?: string;
+  routing?: {
+    effort: "light" | "standard" | "heavy";
+    model: string;
+    thinking: "low" | "medium" | "high";
+    reason: string;
+    budget?: { turns: number; tools: number };
+  };
 }
 
 export interface CouncilSession {
