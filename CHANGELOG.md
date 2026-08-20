@@ -6,6 +6,7 @@
 - Enabled Pi's quiet startup mode in the full profile so verbose resource lists stay hidden while diagnostics remain visible.
 - Added `/usage` for on-demand OpenAI Codex coding-plan quota, remaining percentages, plan tier, and reset times.
 - Added secret-safe parsing and request failures with no background polling or persisted provider quota data.
+- Retry `/usage` once after a transient network failure while preserving the existing request timeout and cancellation behavior.
 
 ## 0.4.1 — 2026-08-18
 
