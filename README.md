@@ -116,6 +116,7 @@ During a Workbench run, the footer shows the Supervisor and delegated agents as 
 | `/memory [query]` | Show memory status/pending proposals, or recall relevant entries |
 | `/skills-evolve` | Stage and validate all new/updated skills from trusted sources, then reload |
 | `/skills-evolution-status` | Show trusted sources, cadence, audit, and community concept feed |
+| `/usage` | Show remaining coding-plan usage and reset times for the active provider |
 | `/council [idea]` | Run three council rounds, pause after Round 1, and draft/approve intent |
 | `/research [question]` | Confirm a bounded plan, run parallel research tracks, synthesize a cited report, and audit it |
 | `/research-status` | Show tracks, evidence count, audit status, providers, and artifact paths |
@@ -132,6 +133,12 @@ During a Workbench run, the footer shows the Supervisor and delegated agents as 
 | `/council-knowledge [query]` | Search QMD-indexed project and council knowledge |
 | `/council-status` | Show current project council state |
 | `/council-settings` | Edit project-scoped preferences |
+
+## Coding-plan usage
+
+`/usage` resolves the active provider through Pi and fetches quota only when the command is run. For OpenAI Codex subscription auth it shows the plan tier, availability, remaining and used percentages, and local reset times for every returned window, including model-specific limits.
+
+Unsupported providers return a clear message. Workbench does not poll in the background, persist quota responses, or display/store provider credentials. The command depends on the provider's authenticated usage endpoint and reports a secret-safe error if that endpoint is unavailable or the login has expired.
 
 ## Project files
 

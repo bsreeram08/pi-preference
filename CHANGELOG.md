@@ -4,6 +4,8 @@
 
 - Added an opt-in π/SREE startup header with concise skill, prompt, and tool counts to the full Ember profile.
 - Enabled Pi's quiet startup mode in the full profile so verbose resource lists stay hidden while diagnostics remain visible.
+- Added `/usage` for on-demand OpenAI Codex coding-plan quota, remaining percentages, plan tier, and reset times.
+- Added secret-safe parsing and request failures with no background polling or persisted provider quota data.
 
 ## 0.4.1 — 2026-08-18
 
