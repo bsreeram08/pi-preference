@@ -1,0 +1,186 @@
+import { describe, expect, test } from "bun:test";
+import {
+  extractChatGptAccountId,
+  fetchOpenAiCodexUsage,
+  formatCodingPlanUsage,
+  parseOpenAiCodexUsage,
+  usageCommandErrorMessage,
+} from "../usage.ts";
+
+const usagePayload = {
+  plan_type: "prolite",
+  rate_limit: {
+    allowed: true,
+    limit_reached: false,
+    primary_window: {
+      used_percent: 12,
+      limit_window_seconds: 604_800,
+      reset_after_seconds: 86_400,
+      reset_at: 1_700_086_400,
+    },
+    secondary_window: null,
+  },
+  additional_rate_limits: [
+    {
+      limit_name: "GPT-5.3-Codex-Spark",
+      metered_feature: "codex_bengalfox",
+      rate_limit: {
+        allowed: true,
+        limit_reached: false,
+        primary_window: {
+          used_percent: 25.4,
+          limit_window_seconds: 18_000,
+          reset_after_seconds: 3_600,
+          reset_at: 1_700_003_600,
+        },
+        secondary_window: {
+          used_percent: 0,
+          limit_window_seconds: 604_800,
+          reset_after_seconds: 604_800,
+          reset_at: 1_700_604_800,
+        },
+      },
+    },
+  ],
+};
+
+describe("coding plan usage", () => {
+  test("parses the current OpenAI Codex usage payload and calculates remaining quota", () => {
+    const usage = parseOpenAiCodexUsage(usagePayload);
+
+    expect(usage.planType).toBe("prolite");
+    expect(usage.allowed).toBe(true);
+    expect(usage.limitReached).toBe(false);
+    expect(usage.windows).toHaveLength(3);
+    expect(usage.windows.map((window) => [window.group, window.usedPercent, window.remainingPercent])).toEqual([
+      ["Coding plan", 12, 88],
+      ["GPT-5.3-Codex-Spark", 25, 75],
+      ["GPT-5.3-Codex-Spark", 0, 100],
+    ]);
+  });
+
+  test("formats remaining percentages, window lengths, plan tier, and reset countdowns", () => {
+    const report = formatCodingPlanUsage(parseOpenAiCodexUsage(usagePayload), 1_700_000_000_000);
+
+    expect(report).toContain("**Plan:** Pro Lite");
+    expect(report).toContain("**Coding-plan status:** Available");
+    expect(report).toContain("| 7-day window | Available | **88%** | 12% | in 1d");
+    expect(report).toContain("GPT-5.3-Codex-Spark · 5-hour window");
+    expect(report).toContain("**75%**");
+    expect(report).toContain("credentials are never displayed or stored");
+  });
+
+  test("extracts the ChatGPT account id without exposing token data in failures", () => {
+    const payload = Buffer.from(JSON.stringify({
+      "https://api.openai.com/auth": { chatgpt_account_id: "acct_demo" },
+    })).toString("base64url");
+
+    expect(extractChatGptAccountId(`header.${payload}.signature`)).toBe("acct_demo");
+    expect(() => extractChatGptAccountId("secret-token-value")).toThrow("Run /login again");
+    try {
+      extractChatGptAccountId("secret-token-value");
+    } catch (error) {
+      expect(String(error)).not.toContain("secret-token-value");
+    }
+  });
+
+  test("uses the official ChatGPT usage endpoint and required account headers", async () => {
+    let requestedUrl = "";
+    let authorization = "";
+    let accountId = "";
+    const fakeFetch: typeof fetch = async (input, init) => {
+      requestedUrl = String(input);
+      const headers = new Headers(init?.headers);
+      authorization = headers.get("Authorization") ?? "";
+      accountId = headers.get("ChatGPT-Account-Id") ?? "";
+      return new Response(JSON.stringify(usagePayload), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+
+    await fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api/",
+      token: "token_demo",
+      accountId: "acct_demo",
+      fetch: fakeFetch,
+    });
+
+    expect(requestedUrl).toBe("https://chatgpt.com/backend-api/wham/usage");
+    expect(authorization).toBe("Bearer token_demo");
+    expect(accountId).toBe("acct_demo");
+  });
+
+  test("does not include provider response bodies in request errors", async () => {
+    const fakeFetch: typeof fetch = async () => new Response("private provider details", { status: 401 });
+
+    try {
+      await fetchOpenAiCodexUsage({
+        baseUrl: "https://chatgpt.com/backend-api",
+        token: "token_demo",
+        accountId: "acct_demo",
+        fetch: fakeFetch,
+      });
+      throw new Error("expected request to fail");
+    } catch (error) {
+      expect(String(error)).toContain("401");
+      expect(String(error)).not.toContain("private provider details");
+      expect(String(error)).not.toContain("token_demo");
+    }
+  });
+
+  test("rejects missing required schema fields and never reports unknown availability as available", () => {
+    expect(() => parseOpenAiCodexUsage({})).toThrow("invalid usage response");
+
+    const usage = parseOpenAiCodexUsage({ plan_type: "plus", rate_limit: null });
+    const report = formatCodingPlanUsage(usage, 1_700_000_000_000);
+    expect(report).toContain("**Coding-plan status:** Unknown");
+    expect(report).not.toContain("**Coding-plan status:** Available");
+  });
+
+  test("preserves model-specific limit status and escapes provider labels in Markdown tables", () => {
+    const payload = structuredClone(usagePayload);
+    payload.additional_rate_limits[0]!.limit_name = "Model | Premium\nalert";
+    payload.additional_rate_limits[0]!.rate_limit.allowed = false;
+    payload.additional_rate_limits[0]!.rate_limit.limit_reached = true;
+
+    const report = formatCodingPlanUsage(parseOpenAiCodexUsage(payload), 1_700_000_000_000);
+    expect(report).toContain("Model \\| Premium alert · 5-hour window | Limit reached");
+    expect(report).not.toContain("Premium\nalert");
+  });
+
+  test("maps arbitrary credential-resolution errors to a fixed secret-safe message", () => {
+    const message = usageCommandErrorMessage(new Error("refresh failed: private upstream response token_demo"));
+    expect(message).toBe("Could not load coding-plan usage. Check your connection or run /login, then try again.");
+    expect(message).not.toContain("private upstream response");
+    expect(message).not.toContain("token_demo");
+  });
+
+  test("combines caller cancellation with the request timeout", async () => {
+    const waitingFetch: typeof fetch = (_input, init) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      const abort = () => reject(new DOMException("aborted", "AbortError"));
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    });
+
+    await expect(fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      timeoutMs: 1,
+      fetch: waitingFetch,
+    })).rejects.toThrow("timed out");
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      signal: controller.signal,
+      timeoutMs: 60_000,
+      fetch: waitingFetch,
+    })).rejects.toThrow("cancelled");
+  });
+});

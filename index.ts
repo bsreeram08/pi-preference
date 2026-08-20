@@ -43,6 +43,7 @@ import { registerWorkflow } from "./workflow.ts";
 import { registerSkillEvolution } from "./skill-evolution.ts";
 import { registerUserPreferences } from "./user-preferences.ts";
 import { registerWorkbenchMemory } from "./memory.ts";
+import { registerUsageCommand } from "./usage.ts";
 import type { AgentResult, AgentSpec, CouncilSession, Exec } from "./types.ts";
 import { canDelegateSpecialists, SupervisorClient, type SupervisorDecision } from "./supervisor.ts";
 import {
@@ -234,6 +235,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
     report: (title, body) => report(pi, title, body),
   });
   registerSkillEvolution(pi);
+  registerUsageCommand(pi, (title, body) => report(pi, title, body));
 
   pi.registerEntryRenderer(REPORT_ENTRY, (entry, { expanded }, theme) => {
     const data = entry.data as ReportEntryData;
