@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Adapted selected AgentMemory concepts into the existing local Workbench store: deterministic weighted recall with diagnostics, integrity-checked explicit-access sidecars, review-gated derived consolidation proposals, and versioned dry-run/review/apply memory transfer. No AgentMemory/iii runtime, daemon, network provider, automatic capture/consolidation, or second memory injection path was added.
+- Added a committed validate-only capability manifest for nine packages, four extensions, and Ember, with hard runtime exclusions for `pi-autoresearch` and `@dietrichgebert/ponytail`; the checker reports drift without installing, removing, enabling, starting, loading, or fetching resources.
+- Added focused memory ranking/access/consolidation/import safety tests, including process-kill visibility recovery and exact-shape rejection, plus capability schema/drift/exclusion/path-binding/no-mutation tests.
 - Added an opt-in π/SREE startup header with concise skill, prompt, and tool counts to the full Ember profile.
 - Enabled Pi's quiet startup mode in the full profile so verbose resource lists stay hidden while diagnostics remain visible.
 - Added `/usage` for on-demand OpenAI Codex coding-plan quota, remaining percentages, plan tier, and reset times.

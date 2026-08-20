@@ -30,6 +30,7 @@
     "test": "bun test tests",
     "typecheck": "node scripts/typecheck.mjs",
     "public-check": "node scripts/check-public-release.mjs",
+    "capabilities:check": "python3 scripts/check-capabilities.py",
     "release-check": "node scripts/check-public-release.mjs --history && bun audit --audit-level=high && bun run test && bun run typecheck",
     "check": "bun run public-check && bun run test && bun run typecheck"
   },

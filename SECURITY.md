@@ -22,10 +22,12 @@ Important boundaries:
 
 - Workbench's child-memory guards provide cooperative tool-level isolation; they are not an operating-system sandbox against arbitrary native code or a malicious same-user process.
 - Child agents can run Pi tools and inherit the Pi process environment. Do not launch Pi from an environment containing credentials that agents do not need.
-- Recalled memory is untrusted data and cannot override system or user instructions. Consequential claims must be verified against current evidence.
+- Recalled memory is untrusted data and cannot override system or user instructions. Consequential claims must be verified against current evidence. Import rejects unknown properties, validates supported versions, checksums, safety filters, bounds, and conflicts before staging, preserves corrupt same-ID local records, and uses a durable visibility barrier during apply; only a Coordinator-approved review can be applied.
 - Research features can contact external providers and websites. Review provider terms and avoid sending confidential material.
 - Automatic trusted-skill evolution is disabled when no explicit configuration exists. `/skills-evolve` and the opinionated installer profile opt into network retrieval from the configured allowlist.
 - The default installer does not merge personal preferences, companion packages, or skill-evolution settings. `./install.sh --full` is an explicit opt-in to the documented opinionated profile.
+- `bun run capabilities:check` is validate-only. It reads only allowlisted capability metadata and compares configured package sources, lock metadata, installed identities, discoverable names, real approved target chains, approved public symlinks, and exclusions. Explicit extension/theme source settings are drift rather than basename-matched aliases. It does not execute packages/extensions, inspect credentials, validate resource syntax/schema, or prove successful loading in an already-running process. Exit status `1` is drift; `2` means inspection failed closed. It has no fix/install/fetch mode.
+- `pi-autoresearch` and `@dietrichgebert/ponytail` are hard runtime exclusions in the capability manifest. This does not delete or forbid separately reviewed autoresearch skill documents.
 
 ## Secrets
 

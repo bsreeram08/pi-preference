@@ -75,6 +75,17 @@ Provider credentials, sessions, project runtime state, agent memory, update back
 
 After installation, start Pi or run `/reload`.
 
+### Validate the approved capability inventory
+
+The committed [`setup/capabilities.v1.json`](setup/capabilities.v1.json) describes the approved nine packages, four auto-discoverable extensions, Ember theme, and hard runtime exclusions for `pi-autoresearch` and `@dietrichgebert/ponytail`. It records policy; it is not an installer and does not change `setup/defaults/settings.json`.
+
+```bash
+bun run capabilities:check
+# or: python3 scripts/check-capabilities.py --agent-dir /path/to/pi/agent --json
+```
+
+The checker reads only the manifest and allowlisted capability metadata in `settings.json`, `npm/package.json`, `npm/package-lock.json`, managed package manifests, and top-level extension/theme directories. It never loads code, contacts a network, invokes a package manager, or reads authentication/provider/session files. Exit `0` means the configured package sources, locked and installed package identities, discoverable extension/theme names, approved symlink targets, and exclusions match the committed inventory; `1` means deterministic drift (including an excluded runtime package), and `2` means state could not be established safely. Explicit extension/theme source settings are treated as drift because this inventory relies on the approved discoverable resources and links. It does not validate extension syntax, Pi resource declarations, theme schemas, or successful loading in an already-running process. Checking never installs, removes, enables, starts, or fetches a capability. Autoresearch skills stored outside the excluded auto-loading runtime package/extension remain untouched.
+
 ### Update
 
 ```bash
@@ -276,10 +287,13 @@ Trusted skill evolution is disabled when no explicit configuration exists. The `
 - Volatile entries can carry `expiresAt`; stale entries are excluded from normal recall but remain auditable.
 - Every entry and tombstone carries a SHA-256 checksum. Status reports altered or unreadable records instead of injecting them.
 - Writes use atomic file replacement and an owner-token per-scope process lock, preserving deduplication under concurrent child processes. Abandoned locks fail closed and require deliberate operator recovery rather than unsafe automatic takeover.
-- Injected context is relevance-filtered and capped at 12,000 characters. It explicitly says memory is fallible data, not executable instruction.
-- Credentials, sensitive personal data, prompt-injection-shaped text, and unsafe global facts/decisions are rejected.
+- Injected context uses fixed deterministic summary/evidence/metadata weights and stable tie-breakers, and remains capped at 12,000 characters. It explicitly says memory is fallible data, not executable instruction.
+- Explicit Coordinator and specialist recall records integrity-checked count/time/query-hash sidecars; automatic prompt recall never writes access data or ranks by popularity.
+- Derived consolidation is an explicit 2–12-source pending proposal from current, non-superseded visible memories. It never captures transcripts, runs an LLM, or supersedes sources before Coordinator review.
+- Versioned structured export and dry-run import validate exact record shapes, record/bundle checksums, safety, bounds, conflicts, and project-root rebinding. Only the Coordinator can stage, approve, and separately apply merge-only imports; a durable transaction barrier keeps interrupted imports hidden until one atomic commit marker exists.
+- Credentials, sensitive personal data, prompt-injection-shaped text, and unsafe global facts/decisions are rejected on normal writes and import.
 
-Explicit user operating preferences still belong in `preference_memory` and `~/.pi/agent/user-profile.json`; Workbench memory does not replace personalization. The design adapts lightweight namespace, provenance, invalidation, and retention ideas from `tickernelz/pi-memory` and Semantica without adding either package as a runtime dependency. See [`docs/memory.md`](docs/memory.md) for the full trust and lifecycle model.
+Explicit user operating preferences still belong in `preference_memory` and `~/.pi/agent/user-profile.json`; Workbench memory does not replace personalization. The design adapts lightweight namespace, provenance, invalidation, retention, access-diagnostic, explicit-consolidation, and reviewed-transfer concepts from inspected primary sources without adding their runtime stacks. In particular, AgentMemory's iii engine, daemon/port, automatic capture/consolidation, network provider, and extra injection behavior are rejected. See [`docs/memory.md`](docs/memory.md) for the full trust, citations, and lifecycle model.
 
 ## Development
 

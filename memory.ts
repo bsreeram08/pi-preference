@@ -13,6 +13,7 @@ import {
   type MemoryEntry,
   type MemoryKind,
   type MemoryScope,
+  type MemoryExportBundleV1,
 } from "./memory-store.ts";
 import type { Exec } from "./types.ts";
 
@@ -21,7 +22,10 @@ interface MemoryDependencies {
   report(title: string, body: string): void;
 }
 
-const MEMORY_ACTIONS = ["recall", "remember", "propose_shared", "pending", "promote", "forget", "status"] as const;
+const MEMORY_ACTIONS = [
+  "recall", "remember", "propose_shared", "propose_consolidation", "pending", "promote", "forget", "status",
+  "export", "propose_import", "pending_imports", "review_import", "apply_import",
+] as const;
 const MEMORY_SCOPES = ["project", "global"] as const;
 const MEMORY_AUDIENCES = ["shared", "agent", "pending"] as const;
 const MEMORY_KINDS = ["fact", "decision", "learning", "warning"] as const;
@@ -53,11 +57,13 @@ function renderStatus(status: Awaited<ReturnType<WorkbenchMemoryStore["status"]>
     `- Project agent memories: ${agentRows(status.project.agents)}`,
     `- Project stale: ${status.project.stale}`,
     `- Project integrity failures: ${status.project.integrityFailures}`,
+    `- Project recall access records/failures: ${status.project.accessRecords ?? 0}/${status.project.accessIntegrityFailures ?? 0}`,
     `- Global shared: ${status.global.shared}`,
     `- Global pending: ${status.global.pending}`,
     `- Global agent memories: ${agentRows(status.global.agents)}`,
     `- Global stale: ${status.global.stale}`,
     `- Global integrity failures: ${status.global.integrityFailures}`,
+    `- Global recall access records/failures: ${status.global.accessRecords ?? 0}/${status.global.accessIntegrityFailures ?? 0}`,
   ].join("\n");
 }
 
@@ -111,6 +117,10 @@ export function registerWorkbenchMemory(pi: ExtensionAPI, dependencies: MemoryDe
       expiresAt: Type.Optional(Type.String({ description: "ISO-8601 expiry for volatile facts; stale entries are excluded from normal recall" })),
       supersedes: Type.Optional(Type.String({ description: "Prior memory id replaced by this entry" })),
       derivedFrom: Type.Optional(Type.Array(Type.String(), { maxItems: 12, description: "Memory ids used to derive this entry" })),
+      sourceIds: Type.Optional(Type.Array(Type.String(), { minItems: 2, maxItems: 12, description: "Visible memory ids supporting a consolidation proposal" })),
+      diagnostics: Type.Optional(Type.Boolean({ description: "Include deterministic ranking and exclusion diagnostics" })),
+      bundle: Type.Optional(Type.Any({ description: "Structured versioned Workbench memory export bundle; never a filesystem path" })),
+      decision: Type.Optional(StringEnum(["approve", "reject"] as const)),
       includeStale: Type.Optional(Type.Boolean({ description: "Include expired entries for audit or correction" })),
       includeSuperseded: Type.Optional(Type.Boolean({ description: "Include entries replaced by a newer memory for audit history" })),
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
@@ -120,9 +130,12 @@ export function registerWorkbenchMemory(pi: ExtensionAPI, dependencies: MemoryDe
       const scope = (params.scope ?? "project") as MemoryScope;
       const sourceAgent = workbenchAgentIdFromEnvironment();
       const agent = params.agent?.trim() || sourceAgent;
+      if (sourceAgent !== "coordinator" && normalizeMemoryAgentId(agent) !== sourceAgent) {
+        throw new Error("Specialists can access only their own private memory namespace.");
+      }
 
       if (params.action === "recall") {
-        const entries = await store.recall({
+        const diagnostics = await store.diagnoseRecall({
           query: params.query,
           agentId: agent,
           scopes: [scope],
@@ -131,12 +144,52 @@ export function registerWorkbenchMemory(pi: ExtensionAPI, dependencies: MemoryDe
           includeSuperseded: params.includeSuperseded,
           limit: params.limit,
         });
-        return { content: [{ type: "text", text: renderMemoryEntries(entries) }], details: { entries, projectRoot: store.roots.projectPath } };
+        await store.recordRecall(diagnostics.results, params.query);
+        const entries = diagnostics.results.map(({ entry }) => entry);
+        const scoreText = params.diagnostics
+          ? `\n\nDiagnostics: ${JSON.stringify({ scores: diagnostics.results.map(({ entry, score }) => ({ id: entry.id, score })), excluded: diagnostics.excluded })}`
+          : "";
+        return {
+          content: [{ type: "text", text: `${renderMemoryEntries(entries)}${scoreText}` }],
+          details: { entries, results: diagnostics.results, excluded: diagnostics.excluded, projectRoot: store.roots.projectPath },
+        };
       }
 
       if (params.action === "status") {
         const status = await store.status();
         return { content: [{ type: "text", text: renderStatus(status) }], details: { status, roots: store.roots } };
+      }
+
+      if (["export", "propose_import", "pending_imports", "review_import", "apply_import"].includes(params.action) && sourceAgent !== "coordinator") {
+        throw new Error("Only the Coordinator can export or review Workbench memory transfers.");
+      }
+
+      if (params.action === "export") {
+        const bundle = await store.exportBundle({ scopes: [scope], agentId: params.agent?.trim(), includeShared: true, includeTombstones: true, includeAccess: true });
+        return { content: [{ type: "text", text: `Exported ${bundle.entries.length} entries in Workbench memory bundle v${bundle.version} (${bundle.checksum}).` }], details: { bundle } };
+      }
+
+      if (params.action === "propose_import") {
+        if (!params.bundle) throw new Error("A structured memory bundle is required for propose_import.");
+        const review = await store.proposeImport(params.bundle as MemoryExportBundleV1, sourceAgent);
+        return { content: [{ type: "text", text: `Staged dry-run import ${review.id}; ${review.counts.entries} entries await Coordinator review.` }], details: { review } };
+      }
+
+      if (params.action === "pending_imports") {
+        const reviews = await store.pendingImports();
+        return { content: [{ type: "text", text: reviews.length ? reviews.map((review) => `- ${review.id}: ${review.status}; ${review.counts.entries} entries; ${review.counts.duplicates} duplicates`).join("\n") : "No pending Workbench memory imports." }], details: { reviews } };
+      }
+
+      if (params.action === "review_import") {
+        if (!params.id?.trim() || !params.decision) throw new Error("Import review id and approve/reject decision are required.");
+        const review = await store.reviewImport(params.id, params.decision, sourceAgent);
+        return { content: [{ type: "text", text: `${review.status === "approved" ? "Approved" : "Rejected"} memory import ${review.id}; approval does not apply it.` }], details: { review } };
+      }
+
+      if (params.action === "apply_import") {
+        if (!params.id?.trim()) throw new Error("Approved import review id is required.");
+        const result = await store.applyApprovedImport(params.id, sourceAgent);
+        return { content: [{ type: "text", text: `Applied memory import ${result.review.id}: ${result.imported} imported, ${result.skipped} skipped.` }], details: { result } };
       }
 
       if (params.action === "pending") {
@@ -193,6 +246,19 @@ export function registerWorkbenchMemory(pi: ExtensionAPI, dependencies: MemoryDe
         return { content: [{ type: "text", text: `Added shared-memory proposal ${entry.id}.` }], details: { entry } };
       }
 
+      if (params.action === "propose_consolidation") {
+        if (!params.sourceIds) throw new Error("Consolidation sourceIds are required.");
+        const entry = await store.proposeConsolidation({
+          scope,
+          sourceIds: params.sourceIds,
+          kind,
+          summary: params.summary,
+          evidence: params.evidence,
+          sourceAgent,
+        });
+        return { content: [{ type: "text", text: `Added review-gated consolidation proposal ${entry.id}.` }], details: { entry } };
+      }
+
       if (params.action !== "remember") throw new Error(`Unsupported memory action: ${params.action}`);
       const audience = (params.audience === "agent" ? "agent" : "shared") as MemoryAudience;
       if (sourceAgent !== "coordinator" && audience === "shared") {
@@ -221,8 +287,9 @@ export function registerWorkbenchMemory(pi: ExtensionAPI, dependencies: MemoryDe
       const store = await storeFor(ctx.cwd);
       const query = rawArgs.trim();
       if (query) {
-        const entries = await store.recall({ query, agentId: "coordinator", limit: 30 });
-        dependencies.report("Workbench memory recall", renderMemoryEntries(entries));
+        const results = await store.recallDetailed({ query, agentId: "coordinator", limit: 30 });
+        await store.recordRecall(results, query);
+        dependencies.report("Workbench memory recall", renderMemoryEntries(results.map(({ entry }) => entry)));
         return;
       }
       const [status, pending] = await Promise.all([store.status(), store.pending()]);
