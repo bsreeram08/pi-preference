@@ -82,7 +82,7 @@ describe("public installer configuration safety", () => {
     const settings = JSON.parse(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"));
     const profile = JSON.parse(await fs.readFile(path.join(agentDir, "user-profile.json"), "utf8"));
     const evolution = JSON.parse(await fs.readFile(path.join(evolutionDir, "config.json"), "utf8"));
-    expect(settings).toEqual({ theme: "ember", customSetting: true });
+    expect(settings).toEqual({ theme: "ember", quietStartup: true, customSetting: true });
     expect(profile.preferences.some((item: { id: string }) => item.id === "local")).toBe(true);
     expect(profile.preferences.length).toBeGreaterThan(1);
     expect(evolution.enabled).toBe(false);
@@ -135,6 +135,7 @@ describe("public installer configuration safety", () => {
     await fs.symlink(locate("pi"), path.join(binDir, "pi"));
     await fs.writeFile(path.join(extensionsDir, "pi-workbench"), "original-extension\n");
     await fs.writeFile(path.join(extensionsDir, "pi-look"), "original-look\n");
+    await fs.writeFile(path.join(extensionsDir, "startup-header.ts"), "original-header\n");
     await fs.chmod(themesDir, 0o500);
 
     let result;
@@ -155,8 +156,10 @@ describe("public installer configuration safety", () => {
     expect(result.stderr).toContain("restoring replaced links");
     expect(await fs.readFile(path.join(extensionsDir, "pi-workbench"), "utf8")).toBe("original-extension\n");
     expect(await fs.readFile(path.join(extensionsDir, "pi-look"), "utf8")).toBe("original-look\n");
+    expect(await fs.readFile(path.join(extensionsDir, "startup-header.ts"), "utf8")).toBe("original-header\n");
     expect((await fs.lstat(path.join(extensionsDir, "pi-workbench"))).isSymbolicLink()).toBe(false);
     expect((await fs.lstat(path.join(extensionsDir, "pi-look"))).isSymbolicLink()).toBe(false);
+    expect((await fs.lstat(path.join(extensionsDir, "startup-header.ts"))).isSymbolicLink()).toBe(false);
   }, 20_000);
 
   test("keeps the default profile non-invasive", async () => {

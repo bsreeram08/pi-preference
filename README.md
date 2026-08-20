@@ -56,7 +56,7 @@ The safe default installer:
 - backs up replaced resources and rolls links back if installation fails;
 - runs Bun tests and strict TypeScript checks when those tools are available.
 
-To opt into Sreeram's complete opinionated profile—Ember activation, status line, explicit preference baseline, and allowlisted periodic skill evolution—run:
+To opt into Sreeram's complete opinionated profile—compact π/SREE startup art, concise capability counts, Ember activation, status line, explicit preference baseline, and allowlisted periodic skill evolution—run:
 
 ```bash
 ./install.sh --full
@@ -88,7 +88,7 @@ Use `./install.sh --full` again only if that profile remains desired.
 
 ### Uninstall or restore
 
-Remove only the Workbench, Pi Look, and Ember symlinks under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}` after verifying where each points. Workbench deliberately leaves project state and memory intact so uninstalling cannot destroy user data.
+Remove only the Workbench, Pi Look, startup-header, and Ember symlinks under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}` after verifying where each points. Workbench deliberately leaves project state and memory intact so uninstalling cannot destroy user data.
 
 Installer backups are stored under:
 

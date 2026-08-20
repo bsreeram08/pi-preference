@@ -7,9 +7,9 @@ Install Sreeram's Pi Workbench.
 
 Usage: ./install.sh [--full] [--strict]
 
-  --full    Opt into the Ember theme, preference baseline, status line, and
-            trusted skill-evolution profile. Existing JSON values win except
-            that the active theme becomes Ember.
+  --full    Opt into the custom startup header, Ember theme, preference
+            baseline, status line, and trusted skill-evolution profile.
+            Existing JSON values win except that the active theme becomes Ember.
   --strict  Require Bun and TypeScript and run every development check.
   --help    Show this help.
 
@@ -240,6 +240,9 @@ if [[ "$(realpath_portable "$ROOT")" != "$(realpath_portable "$TARGET_EXTENSION"
 fi
 backup_and_link "$ROOT/setup/pi-look" "$AGENT_DIR/extensions/pi-look"
 backup_and_link "$ROOT/setup/themes/ember.json" "$AGENT_DIR/themes/ember.json"
+if ((FULL == 1)); then
+  backup_and_link "$ROOT/startup-header.ts" "$AGENT_DIR/extensions/startup-header.ts"
+fi
 python3 "$ROOT/scripts/install-config.py" apply "${CONFIG_ARGS[@]}" --backup-root "$BACKUP_ROOT"
 COMMITTING=0
 

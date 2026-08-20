@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Added an opt-in π/SREE startup header with concise skill, prompt, and tool counts to the full Ember profile.
+- Enabled Pi's quiet startup mode in the full profile so verbose resource lists stay hidden while diagnostics remain visible.
+
 ## 0.4.1 — 2026-08-18
 
 - Prepared the project for public release as **Sreeram's Pi Workbench** under the MIT License, with third-party notices, security/support/conduct policies, contribution guidance, and GitHub issue/PR templates.
