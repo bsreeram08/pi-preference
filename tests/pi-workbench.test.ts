@@ -30,6 +30,7 @@ import { AgentDashboardState } from "../dashboard-state.ts";
 import { canDelegateSpecialists, parseSupervisorDecision } from "../supervisor.ts";
 import { DEFAULT_CONFIG, normalizeConfig } from "../config.ts";
 import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
+import { CHILD_MEMORY_ACTIONS } from "../child-tools.ts";
 import { createResearchTracks, detectResearchMode, parseResearchAgentOutput } from "../research-prompts.ts";
 import {
   auditResearchEvidence,
@@ -131,6 +132,10 @@ describe("dynamic specialist selection", () => {
 });
 
 describe("Pi workflow routing", () => {
+  test("exposes reviewed consolidation proposals to specialist child agents", () => {
+    expect(CHILD_MEMORY_ACTIONS).toContain("propose_consolidation");
+  });
+
   test("routes functional roles to capability-specific models", () => {
     expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG)?.model).toBe("openai-codex/gpt-5.4-mini:medium");
     expect(resolveWorkflowAgent("planner", DEFAULT_CONFIG)?.model).toBe("openai-codex/gpt-5.6-sol:high");

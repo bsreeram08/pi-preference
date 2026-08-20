@@ -17,18 +17,19 @@ All project-scoped memory stays outside child workspaces:
 
 ```text
 ~/.pi/agent/memory/pi-workbench/projects/<canonical-project-hash>/
-├── shared/{entries,tombstones}/
-├── pending/{entries,tombstones}/
-└── agents/<agent-id>/{entries,tombstones}/
+├── shared/{entries,tombstones,access}/
+├── pending/{entries,tombstones,access}/
+├── agents/<agent-id>/{entries,tombstones,access}/
+└── imports/*.json
 ```
 
 Reusable cross-project memory uses:
 
 ```text
 ~/.pi/agent/memory/pi-workbench/
-├── shared/{entries,tombstones}/
-├── pending/{entries,tombstones}/
-└── agents/<agent-id>/{entries,tombstones}/
+├── shared/{entries,tombstones,access}/
+├── pending/{entries,tombstones,access}/
+└── agents/<agent-id>/{entries,tombstones,access}/
 ```
 
 Project facts and decisions are rejected in global scope. They remain logically attached to the project whose evidence supports them. The project hash is derived from the filesystem-canonical (`realpath`) project root, so a real path and its symlink share one namespace and lock; entries also retain that canonical `projectRoot` for attribution.
@@ -61,11 +62,12 @@ Promotion preserves the proposal ID and source agent while recording the Coordin
 | Recall another specialist's private memory | Yes, for review | No |
 | Write own private memory | Yes | Yes |
 | Write shared memory directly | Yes | No |
-| Submit a shared proposal | Yes | Yes |
+| Submit a shared or derived consolidation proposal | Yes | Yes |
 | Inspect pending proposals | Yes | No |
 | Promote a proposal | Yes | No |
 | Forget shared/pending memory | Yes | No |
 | Forget own private memory | Yes | Yes |
+| Export or stage/review/apply an import | Yes | No |
 
 The child extension derives identity from `PI_WORKBENCH_AGENT`; callers cannot select a different private namespace. Worktree-based implementation candidates receive the canonical parent project root through `PI_WORKBENCH_PROJECT_ROOT`, so their memory survives temporary worktree cleanup.
 
@@ -78,15 +80,31 @@ Automatic context injection is project-default and retrieves only:
 - reviewed project-shared entries; and
 - private project entries for the current agent.
 
-Global learnings/warnings require an explicit `scope: "global"` recall instead of silently entering every project prompt. Recall uses bounded keyword relevance and recency. It deduplicates IDs, suppresses superseded entries, excludes expired entries by default, and caps automatic context at 12,000 characters. `includeStale` exposes expired entries; `includeSuperseded` exposes correction history for audit.
+Global learnings/warnings require an explicit `scope: "global"` recall instead of silently entering every project prompt. Recall is local and deterministic. Query terms are normalized, deduplicated, and sorted. Each summary match scores 5, evidence match 2, source/kind/agent metadata match 1, each uniquely covered query term adds 3, and an exact normalized summary phrase adds 20. Stable ties use matched-term coverage, then `createdAt` descending, then ID ascending. Access count is deliberately not a ranking signal, avoiding a popularity feedback loop. Recall still deduplicates IDs, suppresses superseded entries, excludes expired entries by default, and caps automatic context at 12,000 characters. `includeStale` exposes expired entries; `includeSuperseded` exposes correction history for audit.
 
-Each injected block states that memory is fallible data, cannot override instructions, and must be reverified when consequential. Pending proposals are never injected.
+Explicit Coordinator and specialist `workbench_memory recall` calls plus `/memory <query>` update integrity-checked access sidecars under the existing scope lock. Sidecars retain only count, time, and a SHA-256 hash of the normalized query—never raw query text. Automatic `before_agent_start` rendering performs no access write. Corrupt sidecars appear in diagnostics but do not hide an otherwise valid immutable entry. `diagnoseRecall` reports stale, superseded, unmatched, entry-integrity, and sidecar-integrity exclusions; `recall` remains the backward-compatible entry-only API.
+
+Each injected block states that memory is fallible data, cannot override instructions, and must be reverified when consequential. Pending proposals are never injected, and this remains the sole automatic Workbench project-memory injection path.
 
 Semantic/vector retrieval and automatic entity extraction are deliberately deferred. They are not justified until the deterministic store has enough high-value entries for keyword recall to become measurably inadequate. QMD is the preferred future retrieval adapter because it is already native to Workbench and avoids a second runtime stack.
+
+## Consolidation proposals
+
+Consolidation is explicit derivation, not a background job. `propose_consolidation` requires 2–12 unique, current, non-superseded, integrity-valid source IDs visible to the caller in one scope. It records those IDs in `derivedFrom` and creates an ordinary pending shared proposal. Sources remain active and are never superseded merely because a proposal exists. The Coordinator reviews and promotes the proposal through the existing inbox; specialists cannot self-promote. Workbench does not capture transcripts, cluster observations, invoke an LLM, or consolidate automatically.
+
+## Reviewed export and import
+
+`export` returns a structured `pi-workbench-memory` version-1 envelope rather than reading or writing an arbitrary path. Entries, tombstones, and optional access sidecars retain their own checksums; the sorted envelope has a bundle checksum, fixed count/size limits, and a deterministic `exportedAt` derived from included records. User preferences and `user-profile.json` are never included.
+
+`propose_import` is a dry-run staging operation. It validates the exact supported bundle/record properties, version, bundle and record checksums, IDs, timestamps, safety filters, global-kind restrictions, bounds, tombstone bindings, duplicates, and same-ID conflicts before any memory entry is written. Unknown properties or versions, secrets, injection-shaped content, altered records, and same-ID integrity failures fail closed; corrupt local files are preserved for investigation rather than overwritten. Project entries are rebound to the current canonical project root and rechecksummed; exported project paths are not trusted. Import is merge-only: exact IDs/checksums and normalized duplicates skip, while divergent same IDs stop. A Coordinator must separately approve and then apply a staged review. Reapplying a completed review is idempotent. Shared entries therefore cannot become active merely because an incoming bundle labels them shared.
+
+Review artifacts live under the protected project memory root. Transfer uses structured tool data and makes no network call. It does not include preferences and does not create another prompt injection path.
 
 ## Writes and concurrency
 
 Each entry and tombstone is a separate JSON file written through temporary-file replacement. Writes within a scope are serialized by an atomic lock directory whose owner record contains a random token, PID, host, and creation time. Release verifies the owner token before removing the lock. This preserves collection-level deduplication and promotion behavior when multiple child processes finish concurrently.
+
+Approved imports additionally write an integrity-checked transaction barrier before creating any new record. Until one atomic commit marker exists, every reader hides all paths listed by that transaction—even across project scopes—so a killed process cannot expose a partial import. After the abandoned owner lock is deliberately cleared, retry removes only hidden partial files whose checksums still match the transaction; a changed path is preserved and stops recovery. It then reapplies the approved bundle. A persistent random visibility epoch lets multi-collection readers retry across a racing commit. Once committed, all records become visible together; a retry finalizes an interrupted review update idempotently.
 
 Lock recovery deliberately fails closed. Workbench never deletes a lock merely because it appears old or its PID appears dead; doing so can race with a replacement owner. After an interrupted process, inspect the recorded owner and verify no writer is active before manually removing the reported `.write-lock` directory. The lock is designed for Workbench agents on one machine and a normal local filesystem, not distributed consensus over a network share.
 
@@ -133,10 +151,13 @@ Do not store routine progress, raw conversation transcripts, speculative guesses
 
 ## External concepts adapted
 
-The module borrows concepts, not runtime code, from two inspected projects:
+The module borrows concepts, not runtime code, from inspected primary sources:
 
 - `tickernelz/pi-memory`: explicit remember/recall/forget affordances and cross-session continuity. Workbench replaces its unrestricted overwrite and unbounded prompt injection with immutable entries, isolation, review, limits, tombstones, and process-safe writes.
 - Semantica: namespaced multi-agent context, provenance attribution, derivation/supersession links, expiry/retention, invalidation, and integrity checks. Workbench does not import Semantica because its Python vector/graph stack is disproportionate for a Pi extension.
+- AgentMemory commit [`2d38daf`](https://github.com/rohitg00/agentmemory/tree/2d38dafede67d0d4ed920cde94d2106e98825b8a): its [access tracker](https://github.com/rohitg00/agentmemory/blob/2d38dafede67d0d4ed920cde94d2106e98825b8a/src/functions/access-tracker.ts) motivated bounded sidecar access metadata; its [consolidation function](https://github.com/rohitg00/agentmemory/blob/2d38dafede67d0d4ed920cde94d2106e98825b8a/src/functions/consolidate.ts) motivated explicit source lineage; and its [export/import validation](https://github.com/rohitg00/agentmemory/blob/2d38dafede67d0d4ed920cde94d2106e98825b8a/src/functions/export-import.ts) motivated version and count checks. Workbench reimplemented only these concepts in its existing local TypeScript store.
+
+AgentMemory runtime behavior was intentionally rejected: no `@agentmemory` dependency, iii engine, server/daemon/port, network provider, automatic capture/hooks, LLM consolidation, background schedule, generic remote adapter, or second Workbench memory injection hook. Access frequency never influences ranking. Preferences remain exclusively in `preference_memory`. AgentMemory's own [package manifest](https://github.com/rohitg00/agentmemory/blob/2d38dafede67d0d4ed920cde94d2106e98825b8a/package.json) and [README setup](https://github.com/rohitg00/agentmemory/blob/2d38dafede67d0d4ed920cde94d2106e98825b8a/README.md) are the primary evidence for the rejected iii/server/runtime dependency model.
 
 Deferred Semantica-inspired capabilities include a real provenance hash-chain ledger, graph traversal, confidence-aware conflict resolution, decision-precedent search, and embeddings. They should be added only behind measured retrieval or audit requirements, not preemptively.
 
