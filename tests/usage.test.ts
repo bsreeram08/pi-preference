@@ -111,8 +111,12 @@ describe("coding plan usage", () => {
     expect(accountId).toBe("acct_demo");
   });
 
-  test("does not include provider response bodies in request errors", async () => {
-    const fakeFetch: typeof fetch = async () => new Response("private provider details", { status: 401 });
+  test("does not retry or include provider response bodies in HTTP/auth errors", async () => {
+    let attempts = 0;
+    const fakeFetch: typeof fetch = async () => {
+      attempts += 1;
+      return new Response("private provider details", { status: 401 });
+    };
 
     try {
       await fetchOpenAiCodexUsage({
@@ -126,7 +130,27 @@ describe("coding plan usage", () => {
       expect(String(error)).toContain("401");
       expect(String(error)).not.toContain("private provider details");
       expect(String(error)).not.toContain("token_demo");
+      expect(attempts).toBe(1);
     }
+  });
+
+  test("does not retry malformed successful responses", async () => {
+    let attempts = 0;
+    const malformedFetch: typeof fetch = async () => {
+      attempts += 1;
+      return new Response("{}", {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await expect(fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      fetch: malformedFetch,
+    })).rejects.toThrow("invalid usage response");
+    expect(attempts).toBe(1);
   });
 
   test("rejects missing required schema fields and never reports unknown availability as available", () => {
@@ -154,6 +178,80 @@ describe("coding plan usage", () => {
     expect(message).toBe("Could not load coding-plan usage. Check your connection or run /login, then try again.");
     expect(message).not.toContain("private upstream response");
     expect(message).not.toContain("token_demo");
+  });
+
+  test("retries one transient network failure before reporting the service as unreachable", async () => {
+    let attempts = 0;
+    const flakyFetch: typeof fetch = async () => {
+      attempts += 1;
+      if (attempts === 1) throw new TypeError("fetch failed");
+      return new Response(JSON.stringify(usagePayload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    const usage = await fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      retryDelayMs: 0,
+      fetch: flakyFetch,
+    });
+    expect(attempts).toBe(2);
+    expect(usage.planType).toBe("prolite");
+  });
+
+  test("stops after one retry when the service remains unreachable", async () => {
+    let attempts = 0;
+    const failedFetch: typeof fetch = async () => {
+      attempts += 1;
+      throw new TypeError("fetch failed");
+    };
+
+    await expect(fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      retryDelayMs: 0,
+      fetch: failedFetch,
+    })).rejects.toThrow("Could not reach");
+    expect(attempts).toBe(2);
+  });
+
+  test("honors cancellation and the overall timeout during the retry delay", async () => {
+    let cancellationAttempts = 0;
+    const cancellationController = new AbortController();
+    const cancellationFetch: typeof fetch = async () => {
+      cancellationAttempts += 1;
+      setTimeout(() => cancellationController.abort(), 0);
+      throw new TypeError("fetch failed");
+    };
+    await expect(fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      signal: cancellationController.signal,
+      timeoutMs: 60_000,
+      retryDelayMs: 60_000,
+      fetch: cancellationFetch,
+    })).rejects.toThrow("cancelled");
+    expect(cancellationAttempts).toBe(1);
+
+    let timeoutAttempts = 0;
+    const timeoutFetch: typeof fetch = async () => {
+      timeoutAttempts += 1;
+      throw new TypeError("fetch failed");
+    };
+    await expect(fetchOpenAiCodexUsage({
+      baseUrl: "https://chatgpt.com/backend-api",
+      token: "token_demo",
+      accountId: "acct_demo",
+      timeoutMs: 1,
+      retryDelayMs: 60_000,
+      fetch: timeoutFetch,
+    })).rejects.toThrow("timed out");
+    expect(timeoutAttempts).toBe(1);
   });
 
   test("combines caller cancellation with the request timeout", async () => {

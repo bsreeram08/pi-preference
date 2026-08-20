@@ -1,9 +1,11 @@
 import { Buffer } from "node:buffer";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const OPENAI_CODEX_PROVIDER = "openai-codex";
 const OPENAI_AUTH_CLAIM = "https://api.openai.com/auth";
 const REQUEST_TIMEOUT_MS = 10_000;
+const NETWORK_RETRY_DELAY_MS = 200;
 const GENERIC_COMMAND_ERROR = "Could not load coding-plan usage. Check your connection or run /login, then try again.";
 
 interface JsonObject {
@@ -36,6 +38,7 @@ export interface UsageRequest {
   headers?: Record<string, string | null | undefined>;
   signal?: AbortSignal;
   timeoutMs?: number;
+  retryDelayMs?: number;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -164,17 +167,26 @@ export async function fetchOpenAiCodexUsage(request: UsageRequest): Promise<Codi
 
   const timeoutSignal = AbortSignal.timeout(request.timeoutMs ?? REQUEST_TIMEOUT_MS);
   const signal = request.signal ? AbortSignal.any([request.signal, timeoutSignal]) : timeoutSignal;
-  let response: Response;
-  try {
-    response = await (request.fetch ?? globalThis.fetch)(usageEndpoint(request.baseUrl), {
-      method: "GET",
-      headers,
-      signal,
-    });
-  } catch (error) {
-    throw requestError(error, timeoutSignal, request.signal);
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      response = await (request.fetch ?? globalThis.fetch)(usageEndpoint(request.baseUrl), {
+        method: "GET",
+        headers,
+        signal,
+      });
+      break;
+    } catch (error) {
+      if (attempt === 1 || signal.aborted) throw requestError(error, timeoutSignal, request.signal);
+      try {
+        await delay(request.retryDelayMs ?? NETWORK_RETRY_DELAY_MS, undefined, { signal });
+      } catch (delayError) {
+        throw requestError(delayError, timeoutSignal, request.signal);
+      }
+    }
   }
 
+  if (!response) throw new SafeUsageError("Could not reach the OpenAI Codex usage service.");
   if (!response.ok) {
     throw new SafeUsageError(`OpenAI Codex usage request failed (${response.status}). Run /login if the session expired.`);
   }
