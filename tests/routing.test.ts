@@ -22,7 +22,9 @@ describe("adaptive model routing", () => {
     });
 
     expect(light.effort).toBe("light");
-    expect(light.model).toBe(BALANCED_ROUTES.light.model);
+    expect(light.model).toBe("openai-codex/gpt-5.6-luna:low");
+    expect(routeTask({ task: "Review a bounded API change and run its tests.", effort: "standard" }).model)
+      .toBe("openai-codex/gpt-5.6-terra:medium");
     expect(heavy.effort).toBe("heavy");
     expect(heavy.model).toBe("openai-codex/gpt-5.6-sol:high");
     expect(heavy.budget).toEqual(READ_ONLY_BUDGETS.heavy);
@@ -58,7 +60,7 @@ describe("adaptive model routing", () => {
       "Assess the UI animation.",
       "Inspect the video frame.",
     ]) {
-      expect(routeTask({ task, effort: "light", readOnly: true }).model).toBe("openai-codex/gpt-5.6-terra:medium");
+      expect(routeTask({ task, effort: "light", readOnly: true }).model).toBe("openai-codex/gpt-5.6-luna:low");
     }
     expect(routeTask({ task: "Implement a bounded fix.", effort: "light", readOnly: false }).budget).toBeUndefined();
   });

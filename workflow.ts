@@ -67,8 +67,12 @@ interface WorkflowDependencies {
   getRoutingState(): ModelRoutingState;
 }
 
+type WorkbenchTaskState = "running" | "blocked" | "needs_attention" | "completed" | "failed";
+type WorkbenchTaskScope = "plan" | "execution" | "autopilot" | "delegate";
+
 interface Progress {
   update(message: string): void;
+  finish(state: Exclude<WorkbenchTaskState, "running">, detail: string): void;
   clear(): void;
 }
 
@@ -98,10 +102,43 @@ function now(): string {
   return new Date().toISOString();
 }
 
-function progressFor(ctx: ExtensionContext, title: string): Progress {
+function progressFor(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  title: string,
+  task: string,
+  scope: WorkbenchTaskScope,
+  emitEvents = true,
+): Progress {
+  const taskId = `workbench-${scope}-${Date.now()}`;
+  let updates = 0;
+  let terminal = false;
+  const emit = (state: WorkbenchTaskState, detail: string, isTerminal: boolean): void => {
+    if (!emitEvents) return;
+    pi.events.emit("pi-workbench:task-state:v1", {
+      schemaVersion: 1,
+      taskId,
+      scope,
+      state,
+      title: shortened(task, 80) || title,
+      detail,
+      progress: {
+        value: state === "completed" || state === "failed" ? 1 : Math.min(0.85, 0.15 + updates * 0.1),
+        label: shortened(detail, 64),
+      },
+      terminal: isTerminal,
+    });
+  };
   return {
     update(message) {
+      updates += 1;
       if (ctx.hasUI) ctx.ui.setStatus("workflow", `${title}: ${message}`);
+      emit("running", message, false);
+    },
+    finish(state, detail) {
+      if (terminal) return;
+      terminal = true;
+      emit(state, detail, true);
     },
     clear() {
       if (ctx.hasUI) ctx.ui.setStatus("workflow", undefined);
@@ -404,6 +441,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         state.status = "blocked";
         state.plan = plan;
         await saveWorkflowPlan(workflowPaths, state);
+        progress.finish("blocked", `Plan review still has blockers after ${round} rounds`);
         report("Workflow plan blocked", `Quality Reviewer or Technical Reviewer still found a verified blocker after ${round} review rounds.\n\n${planReviewText(reviews)}\n\nDraft: ${state.planPath}`);
         return { state, cancelled: false, executable: false };
       }
@@ -452,6 +490,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       await writeWorkflowRunArtifact(workflowPaths, id, "plan-review-user-edit.md", planReviewText(editedReviews));
       if (!planReviewsPass(editedReviews)) {
         await saveWorkflowPlan(workflowPaths, state);
+        progress.finish("needs_attention", "The edited plan needs another revision");
         report("Edited plan needs revision", `The user-edited plan remains a draft because an independent reviewer found a blocker.\n\n${planReviewText(editedReviews)}\n\nDraft: ${state.planPath}`);
         return { state, cancelled: false, executable: false };
       }
@@ -504,6 +543,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       state.execution.summary = "Execution Manager reported a pre-implementation blocker.";
       state.execution.completedAt = now();
       await saveWorkflowPlan(workflowPaths, state);
+      progress.finish("blocked", "Execution Manager reported a pre-implementation blocker");
       report("Workflow execution blocked", `${executionManager.output}\n\nPlan: ${state.planPath}`);
       return false;
     }
@@ -566,6 +606,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         state.execution.completedAt = now();
         state.execution.summary = `Verified after ${cycle} review cycle${cycle === 1 ? "" : "s"}.`;
         await saveWorkflowPlan(workflowPaths, state);
+        progress.finish("completed", `Verified after ${cycle} review cycle${cycle === 1 ? "" : "s"}`);
         report("Workflow work verified", `The approved plan was implemented and independently verified.\n\n${verification.output}\n\nPlan: ${state.planPath}\nRun evidence: ${pathJoinForDisplay(workflowPaths.runs, state.id)}`);
         return true;
       }
@@ -576,6 +617,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         state.execution.completedAt = now();
         state.execution.summary = `Verification did not pass after ${cycle} cycles.`;
         await saveWorkflowPlan(workflowPaths, state);
+        progress.finish("blocked", `Verification did not pass after ${cycle} cycles`);
         report("Workflow work not verified", `The workflow exhausted its bounded fix loops and refuses to claim completion.\n\n${reviewsText}\n\n${verification.output}\n\nPlan: ${state.planPath}`);
         return false;
       }
@@ -616,7 +658,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     if (!confirmed) return;
 
     dashboard.beginRun(`workflow-plan-${Date.now()}`);
-    const progress = progressFor(ctx, "Planner");
+    const progress = progressFor(pi, ctx, "Planner", task, "plan");
     try {
       const result = await createPlan(project.root, project.paths, project.config, task, ctx, progress, { autonomous: false, autoApprove: false });
       if (result.state) {
@@ -625,7 +667,9 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           `${formatWorkflowPlanStatus(result.state)}\n\n${result.state.status === "approved" ? "Run `/start-work` when ready." : "Revise or rerun `/plan` before execution."}`,
         );
       }
+      progress.finish("completed", result.cancelled ? "Planning cancelled" : "Planning finished");
     } catch (error) {
+      progress.finish("failed", error instanceof Error ? error.message : String(error));
       report("Workflow planning interrupted", `${error instanceof Error ? error.message : String(error)}\n\nNo implementation was started.`);
     } finally {
       progress.clear();
@@ -655,7 +699,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     if (!confirmed) return;
 
     dashboard.beginRun(`workflow-execute-${Date.now()}`);
-    const progress = progressFor(ctx, "Execution Manager");
+    const progress = progressFor(pi, ctx, "Execution Manager", state.task, "execution");
     try {
       await executePlan(project.root, project.paths, project.config, state, progress);
     } catch (error) {
@@ -666,6 +710,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         state.execution.summary = error instanceof Error ? error.message : String(error);
       }
       await saveWorkflowPlan(project.workflowPaths, state);
+      progress.finish("failed", error instanceof Error ? error.message : String(error));
       report("Workflow execution interrupted", `${error instanceof Error ? error.message : String(error)}\n\nThe work is not marked complete.`);
     } finally {
       progress.clear();
@@ -688,10 +733,11 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     if (!confirmed) return;
 
     dashboard.beginRun(`workflow-autopilot-${Date.now()}`);
-    const progress = progressFor(ctx, "Autopilot");
+    const progress = progressFor(pi, ctx, "Autopilot", task, "autopilot");
     try {
       const planning = await createPlan(project.root, project.paths, project.config, task, ctx, progress, { autonomous: true, autoApprove: true });
       if (!planning.state || !planning.executable) {
+        progress.finish("needs_attention", planning.state ? "Planning did not produce an executable plan" : "Planning was cancelled");
         report("Autopilot stopped at planning", planning.state ? formatWorkflowPlanStatus(planning.state) : "Planning was cancelled.");
         return;
       }
@@ -708,6 +754,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         }
         await saveWorkflowPlan(project.workflowPaths, current);
       }
+      progress.finish("failed", message);
       report("Autopilot interrupted", `${message}\n\nThe Coordinator refuses to claim completion without the verification gate.`);
     } finally {
       progress.clear();
@@ -739,7 +786,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       const project = await resolveProject(ctx);
       const ownsRun = !dashboard.state.currentRunId;
       if (ownsRun) dashboard.beginRun(`workflow-tool-${Date.now()}`);
-      const progress = progressFor(ctx, "Delegation");
+      const delegationTitle = params.tasks?.map((item) => item.task).join(" / ") ?? params.task ?? "Delegation";
+      const progress = progressFor(pi, ctx, "Delegation", delegationTitle, "delegate", false);
       try {
         if (params.tasks?.length) {
           const profiles = params.tasks.map((item) => resolveWorkflowAgent(item.agent, project.config)).filter((item): item is WorkflowAgentProfile => Boolean(item));
@@ -843,7 +891,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         if (!confirmed) return;
       }
       dashboard.beginRun(`workflow-command-${Date.now()}`);
-      const progress = progressFor(ctx, profile.title);
+      const progress = progressFor(pi, ctx, profile.title, task, "delegate");
       try {
         const resolved = resolveWorkflowAgent(profile.id, project.config)!;
         const result = await runRole(
@@ -857,8 +905,10 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           "Manual specialist",
           agentJobId("manual", profile.id, Date.now()),
         );
+        progress.finish(result.exitCode === 0 ? "completed" : "failed", result.exitCode === 0 ? `${profile.title} completed` : `${profile.title} failed`);
         report(profile.title, renderAgentResult(result));
       } catch (error) {
+        progress.finish("failed", error instanceof Error ? error.message : String(error));
         report(`${profile.title} failed`, error instanceof Error ? error.message : String(error));
       } finally {
         progress.clear();

@@ -8,7 +8,7 @@ const packages = [
   "@imsus/pi-extension-minimax-coding-plan-mcp", "@capyup/pi-goal", "pi-lmstudio", "pi-subagents",
   "@vigolium/piolium", "context-mode", "pi-background-tasks", "@juicesharp/rpiv-ask-user-question", "@juicesharp/rpiv-todo",
 ];
-const extensions = ["cmux-session.ts", "pi-look", "pi-workbench", "startup-header.ts"];
+const extensions = ["cmux-session.ts", "cmux-workbench.ts", "pi-look", "pi-workbench", "startup-header.ts"];
 const packagePolicies = [
   ["@imsus/pi-extension-minimax-coding-plan-mcp", "^1.0.2", "1.0.2", "sha512-71T4A16Eiv9lp8o8Qfn1F63strEVRi9IGtMTwtDrje34yR+VtxYVUwRB+PmBg49rIWf22I5yWxk5LhIDuhF/zw=="],
   ["@capyup/pi-goal", "^0.6.0", "0.6.0", "sha512-Ohn5YjnYi2CcQuxyRAAXIZPQuKQMt+ED5GGBUX28W7YH9L6WXw+7rh35dFF+Z6CSL1fYnVSZ4S08ezZS7wSBRA=="],
@@ -40,8 +40,10 @@ async function makeFixture(): Promise<string> {
   await fs.mkdir(path.join(workbench, "setup", "pi-look"), { recursive: true });
   await fs.mkdir(path.join(workbench, "setup", "themes"), { recursive: true });
   await fs.writeFile(path.join(extensionRoot, "cmux-session.ts"), "export {};\n");
+  await fs.writeFile(path.join(workbench, "setup", "cmux-workbench.ts"), "export {};\n");
   await fs.writeFile(path.join(workbench, "startup-header.ts"), "export {};\n");
   await fs.writeFile(path.join(workbench, "setup", "themes", "ember.json"), "{}\n");
+  await fs.symlink(path.join(workbench, "setup", "cmux-workbench.ts"), path.join(extensionRoot, "cmux-workbench.ts"), "file");
   await fs.symlink(path.join(workbench, "setup", "pi-look"), path.join(extensionRoot, "pi-look"), "dir");
   await fs.symlink(path.join(workbench, "startup-header.ts"), path.join(extensionRoot, "startup-header.ts"), "file");
   await fs.mkdir(path.join(root, "themes"));
@@ -254,7 +256,11 @@ describe("validate-only capability inventory", () => {
     expect(manifest.inventory.packages.map((value: string) => value.slice(4))).toEqual(packages);
     expect(manifest.inventory.extensions).toEqual(extensions);
     expect(manifest.inventory.packagePolicies).toHaveLength(packages.length);
-    expect(manifest.inventory.extensionLinks).toEqual({ "pi-look": "pi-workbench/setup/pi-look", "startup-header.ts": "pi-workbench/startup-header.ts" });
+    expect(manifest.inventory.extensionLinks).toEqual({
+      "cmux-workbench.ts": "pi-workbench/setup/cmux-workbench.ts",
+      "pi-look": "pi-workbench/setup/pi-look",
+      "startup-header.ts": "pi-workbench/startup-header.ts",
+    });
     expect(manifest.inventory.themeLinks).toEqual({ "ember.json": "extensions/pi-workbench/setup/themes/ember.json" });
     expect(new Set(manifest.inventory.packages).size).toBe(manifest.inventory.packages.length);
     expect(manifest.runtimeExclusions.packages).toEqual(["npm:pi-autoresearch", "npm:@dietrichgebert/ponytail"]);

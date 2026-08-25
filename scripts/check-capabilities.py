@@ -27,8 +27,9 @@ EXPECTED_PACKAGE_POLICIES = [
     ("@juicesharp/rpiv-todo", "^2.6.2", "2.6.2", "sha512-Lt2HzNaKWgOl7/nEJrxtRsKoIQJTZd32BeckDxJ0JGvoUmwYvqOicSpXbgKVZwyGqGBw90WBKYWkEggo9U/Q4Q=="),
 ]
 EXPECTED_PACKAGES = [f"npm:{name}" for name, _, _, _ in EXPECTED_PACKAGE_POLICIES]
-EXPECTED_EXTENSIONS = ["cmux-session.ts", "pi-look", "pi-workbench", "startup-header.ts"]
+EXPECTED_EXTENSIONS = ["cmux-session.ts", "cmux-workbench.ts", "pi-look", "pi-workbench", "startup-header.ts"]
 EXPECTED_EXTENSION_LINKS = {
+    "cmux-workbench.ts": "pi-workbench/setup/cmux-workbench.ts",
     "pi-look": "pi-workbench/setup/pi-look",
     "startup-header.ts": "pi-workbench/startup-header.ts",
 }
