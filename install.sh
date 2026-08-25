@@ -7,15 +7,16 @@ Install Sreeram's Pi Workbench.
 
 Usage: ./install.sh [--full] [--strict]
 
-  --full    Opt into the custom startup header, Ember theme, preference
-            baseline, status line, and trusted skill-evolution profile.
-            Existing JSON values win except that the active theme becomes Ember.
+  --full    Opt into the custom startup header, Ember theme, Sol-first model
+            defaults, preference baseline, status line, and trusted skill-evolution
+            profile. Existing JSON values win except active model/thinking defaults
+            become OpenAI Codex Sol/high and the active theme becomes Ember.
   --strict  Require Bun and TypeScript and run every development check.
   --help    Show this help.
 
-The default installation links Workbench, the framed editor, and the Ember
-file, but preserves the active theme and does not merge preferences, companion
-packages, or skill-evolution settings.
+The default installation links Workbench, the cmux companion, the framed editor,
+and the Ember file, but preserves the active theme and does not merge preferences,
+companion packages, or skill-evolution settings.
 EOF
 }
 
@@ -33,6 +34,7 @@ done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+TARGET_EXTENSION="$AGENT_DIR/extensions/pi-workbench"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 BACKUP_ROOT="$AGENT_DIR/backups/pi-workbench/$STAMP"
 PI_BIN=""
@@ -108,6 +110,16 @@ done
 
 CONFIG_ARGS=(--agent-dir "$AGENT_DIR" --root "$ROOT")
 if ((FULL == 1)); then CONFIG_ARGS+=(--full); fi
+if python3 "$ROOT/scripts/install-config.py" relationship \
+  --agent-dir "$AGENT_DIR" --root "$ROOT" --target-extension "$TARGET_EXTENSION"; then
+  :
+else
+  relationship_status=$?
+  if ((relationship_status == 3)); then
+    printf 'error: refusing to replace the primary Pi Workbench checkout from one of its linked worktrees; switch the primary checkout to this branch and run the installer there\n' >&2
+  fi
+  exit "$relationship_status"
+fi
 python3 "$ROOT/scripts/install-config.py" preflight "${CONFIG_ARGS[@]}"
 
 if [[ -n "$BUN_BIN" ]]; then
@@ -234,10 +246,10 @@ backup_and_link() {
 
 COMMITTING=1
 mkdir -p "$AGENT_DIR/extensions" "$AGENT_DIR/themes"
-TARGET_EXTENSION="$AGENT_DIR/extensions/pi-workbench"
 if [[ "$(realpath_portable "$ROOT")" != "$(realpath_portable "$TARGET_EXTENSION")" ]]; then
   backup_and_link "$ROOT" "$TARGET_EXTENSION"
 fi
+backup_and_link "$ROOT/setup/cmux-workbench.ts" "$AGENT_DIR/extensions/cmux-workbench.ts"
 backup_and_link "$ROOT/setup/pi-look" "$AGENT_DIR/extensions/pi-look"
 backup_and_link "$ROOT/setup/themes/ember.json" "$AGENT_DIR/themes/ember.json"
 if ((FULL == 1)); then
@@ -248,7 +260,7 @@ COMMITTING=0
 
 printf "\nSreeram's Pi Workbench installed in %s\n" "$AGENT_DIR"
 if ((FULL == 1)); then
-  printf 'Opinionated profile enabled. Existing JSON values were preserved except the active theme.\n'
+  printf 'Opinionated profile enabled. Existing JSON values were preserved except active model/thinking defaults and theme.\n'
 else
   printf 'Safe default profile used; existing settings, preferences, and active theme were preserved.\n'
 fi

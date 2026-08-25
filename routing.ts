@@ -49,14 +49,14 @@ export interface ModelRoute {
 export const BALANCED_ROUTING_STATE: ModelRoutingState = { policy: "balanced" };
 
 export const BALANCED_ROUTES: Record<ResolvedRoutingEffort, FixedModelRoute> = {
-  light: { model: "openai-codex/gpt-5.3-codex-spark:low", thinking: "low" },
+  light: { model: "openai-codex/gpt-5.6-luna:low", thinking: "low" },
   standard: { model: "openai-codex/gpt-5.6-terra:medium", thinking: "medium" },
   heavy: { model: "openai-codex/gpt-5.6-sol:high", thinking: "high" },
 };
 
 export const ROUTING_MODEL_ALIASES: Record<string, FixedModelRoute> = {
-  spark: BALANCED_ROUTES.light,
-  luna: { model: "openai-codex/gpt-5.6-luna:low", thinking: "low" },
+  spark: { model: "openai-codex/gpt-5.3-codex-spark:low", thinking: "low" },
+  luna: BALANCED_ROUTES.light,
   terra: BALANCED_ROUTES.standard,
   sol: BALANCED_ROUTES.heavy,
 };

@@ -35,6 +35,20 @@ function runConfig(action: "preflight" | "apply", agentDir: string, backupRoot?:
   });
 }
 
+function runRelationship(root: string, agentDir: string, targetExtension: string) {
+  return spawnSync("python3", [
+    SCRIPT,
+    "relationship",
+    "--agent-dir", agentDir,
+    "--root", root,
+    "--target-extension", targetExtension,
+  ], {
+    cwd: ROOT,
+    env: cleanEnvironment(agentDir),
+    encoding: "utf8",
+  });
+}
+
 afterEach(async () => {
   await Promise.all(temporaryRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
@@ -68,7 +82,7 @@ describe("public installer configuration safety", () => {
     const backupRoot = path.join(root, "backup");
     await fs.mkdir(evolutionDir, { recursive: true });
 
-    const originalSettings = '{"theme":"custom","customSetting":true}\n';
+    const originalSettings = '{"theme":"custom","defaultProvider":"openrouter","defaultModel":"x-ai/grok-4.6","defaultThinkingLevel":"medium","customSetting":true}\n';
     const originalProfile = '{"version":1,"preferences":[{"id":"local","statement":"Keep local."}]}\n';
     const originalEvolution = '{"version":1,"enabled":false,"trustedSources":[]}\n';
     await fs.writeFile(path.join(agentDir, "settings.json"), originalSettings);
@@ -82,7 +96,14 @@ describe("public installer configuration safety", () => {
     const settings = JSON.parse(await fs.readFile(path.join(agentDir, "settings.json"), "utf8"));
     const profile = JSON.parse(await fs.readFile(path.join(agentDir, "user-profile.json"), "utf8"));
     const evolution = JSON.parse(await fs.readFile(path.join(evolutionDir, "config.json"), "utf8"));
-    expect(settings).toEqual({ theme: "ember", quietStartup: true, customSetting: true });
+    expect(settings).toEqual({
+      theme: "ember",
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.6-sol",
+      defaultThinkingLevel: "high",
+      quietStartup: true,
+      customSetting: true,
+    });
     expect(profile.preferences.some((item: { id: string }) => item.id === "local")).toBe(true);
     expect(profile.preferences.length).toBeGreaterThan(1);
     expect(evolution.enabled).toBe(false);
@@ -97,6 +118,26 @@ describe("public installer configuration safety", () => {
     const repeated = runConfig("apply", agentDir, backupRoot);
     expect(repeated.status).toBe(0);
     expect(repeated.stdout).toContain("already current");
+  });
+
+  test("rejects replacing a primary checkout from its linked worktree", async () => {
+    const root = await temporaryRoot();
+    const agentDir = path.join(root, "agent");
+    const target = path.join(agentDir, "extensions", "pi-workbench");
+    const worktree = path.join(root, "feature-worktree");
+    const gitDir = path.join(target, ".git", "worktrees", "feature-worktree");
+    await fs.mkdir(gitDir, { recursive: true });
+    await fs.mkdir(worktree, { recursive: true });
+    await fs.writeFile(path.join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+
+    const blocked = runRelationship(worktree, agentDir, target);
+    expect(blocked.status).toBe(3);
+    expect(blocked.stdout).toContain("depends on the target extension's Git metadata");
+
+    await fs.writeFile(path.join(worktree, ".git"), `gitdir: ${path.join(root, "independent", ".git")}\n`);
+    const safe = runRelationship(worktree, agentDir, target);
+    expect(safe.status).toBe(0);
+    expect(safe.stdout).toContain("worktree relationship: safe");
   });
 
   test("rejects symlinked configuration paths", async () => {
@@ -134,6 +175,7 @@ describe("public installer configuration safety", () => {
     await fs.symlink(locate("python3"), path.join(binDir, "python3"));
     await fs.symlink(locate("pi"), path.join(binDir, "pi"));
     await fs.writeFile(path.join(extensionsDir, "pi-workbench"), "original-extension\n");
+    await fs.writeFile(path.join(extensionsDir, "cmux-workbench.ts"), "original-cmux-workbench\n");
     await fs.writeFile(path.join(extensionsDir, "pi-look"), "original-look\n");
     await fs.writeFile(path.join(extensionsDir, "startup-header.ts"), "original-header\n");
     await fs.chmod(themesDir, 0o500);
@@ -155,9 +197,11 @@ describe("public installer configuration safety", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("restoring replaced links");
     expect(await fs.readFile(path.join(extensionsDir, "pi-workbench"), "utf8")).toBe("original-extension\n");
+    expect(await fs.readFile(path.join(extensionsDir, "cmux-workbench.ts"), "utf8")).toBe("original-cmux-workbench\n");
     expect(await fs.readFile(path.join(extensionsDir, "pi-look"), "utf8")).toBe("original-look\n");
     expect(await fs.readFile(path.join(extensionsDir, "startup-header.ts"), "utf8")).toBe("original-header\n");
     expect((await fs.lstat(path.join(extensionsDir, "pi-workbench"))).isSymbolicLink()).toBe(false);
+    expect((await fs.lstat(path.join(extensionsDir, "cmux-workbench.ts"))).isSymbolicLink()).toBe(false);
     expect((await fs.lstat(path.join(extensionsDir, "pi-look"))).isSymbolicLink()).toBe(false);
     expect((await fs.lstat(path.join(extensionsDir, "startup-header.ts"))).isSymbolicLink()).toBe(false);
   }, 20_000);

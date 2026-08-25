@@ -52,18 +52,18 @@ cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 The safe default installer:
 
 - validates the submodule and Pi RPC imports before changing the installation;
-- links Workbench, the framed editor extension, and the Ember theme file;
+- links Workbench, the cmux companion, the framed editor extension, and the Ember theme file;
 - preserves the current active theme, settings, preferences, and skill-evolution configuration;
 - backs up replaced resources and rolls links back if installation fails;
 - runs Bun tests and strict TypeScript checks when those tools are available.
 
-To opt into Sreeram's complete opinionated profile—compact π/SREE startup art, concise capability counts, Ember activation, status line, explicit preference baseline, and allowlisted periodic skill evolution—run:
+To opt into Sreeram's complete opinionated profile—Main Pi on OpenAI Codex GPT-5.6 Sol/high, compact π/SREE startup art, concise capability counts, Ember activation, status line, explicit preference baseline, and allowlisted periodic skill evolution—run:
 
 ```bash
 ./install.sh --full
 ```
 
-Existing JSON values win except for the explicitly requested Ember activation. Every modified existing configuration file receives a timestamped byte-for-byte backup. Malformed or symlinked configuration fails closed before installation changes anything. No companion Pi packages are added automatically.
+Existing JSON values win except for the explicitly requested OpenAI Codex provider, GPT-5.6 Sol model, high thinking level, and Ember theme. Every modified existing configuration file receives a timestamped byte-for-byte backup. Malformed or symlinked configuration fails closed before installation changes anything. The installer also refuses to replace the primary checkout when invoked from a linked worktree whose Git metadata lives inside that checkout; switch the primary checkout to the desired branch and install there instead. No companion Pi packages are added automatically.
 
 Maintainers and contributors should require every development check:
 
@@ -260,9 +260,15 @@ API failures and skipped providers are returned with provenance. Search snippets
 
 Pi's native skill catalogue remains the source of capabilities. Workbench child agents no longer disable skills: each specialist sees skill descriptions and reads only the matching `SKILL.md` files on demand.
 
-Adaptive model routing uses a compact three-effort interface. Under balanced routing, light tasks use `openai-codex/gpt-5.3-codex-spark:low`, standard tasks use `openai-codex/gpt-5.6-terra:medium`, and heavy tasks use `openai-codex/gpt-5.6-sol:high`. Economy shifts standard/heavy work down where safe; quality starts at Terra and promotes standard work to Sol. Visual/image/UI/rendering work never uses Spark. Read-only children receive enforced stop-and-synthesize budgets of 8 turns/30 tools, 16/60, or 30/120; Workbench blocks excess tool calls and allows one final synthesis turn, while mutation-capable workers remain uncapped.
+Adaptive model routing uses a compact three-effort interface. Under balanced routing, light tasks use `openai-codex/gpt-5.6-luna:low`, standard tasks use `openai-codex/gpt-5.6-terra:medium`, and heavy tasks use `openai-codex/gpt-5.6-sol:high`. Economy keeps Luna for light work, Spark for standard work, and Terra for heavy work; quality uses Terra for light work and Sol/high for standard or heavy work. Visual/image/UI/rendering work never uses Spark. Read-only children receive enforced stop-and-synthesize budgets of 8 turns/30 tools, 16/60, or 30/120; Workbench blocks excess tool calls and allows one final synthesis turn, while mutation-capable workers remain uncapped.
 
-Use `/model-routing` for status or a session-only override; fixed aliases are `spark`, `luna`, `terra`, and `sol`, and explicit fixed routes must use an available `openai-codex/<model>[:low|medium|high]` registry entry (an omitted suffix becomes `:medium`). Exact standalone directives such as `use sol for everything` or `use sol for everything this session` set a fixed route for delegated children. The state and receipts are persisted as TUI-only custom session entries, never added to model context, so new sessions return to the durable project policy. Main Pi remains unchanged because Pi 0.84.2's public model setter also persists global defaults; to fix the parent without changing settings, launch the session with `pi --model openai-codex/gpt-5.6-sol --thinking high`. Both native `pi-subagents` and `delegate_task` receive compact routing guidance and pre-launch receipts. Workbench does not parse or rewrite `workflowScript` source.
+The opinionated `./install.sh --full` profile also makes Main Pi default to `openai-codex/gpt-5.6-sol` with high thinking. It transactionally backs up and replaces only the active provider/model/thinking defaults and theme while preserving unrelated settings. Use `/model-routing` for status or a session-only child override; fixed aliases are `spark`, `luna`, `terra`, and `sol`, and explicit fixed routes must use an available `openai-codex/<model>[:low|medium|high]` registry entry (an omitted suffix becomes `:medium`). Exact standalone directives such as `use sol for everything` or `use sol for everything this session` set a fixed route for delegated children. The state and receipts are persisted as TUI-only custom session entries, never added to model context, so new sessions return to the durable project policy. A fixed child route does not mutate Main Pi's current model. Both native `pi-subagents` and `delegate_task` receive compact routing guidance and pre-launch receipts. Workbench does not parse or rewrite `workflowScript` source.
+
+### cmux task surfaces
+
+The installer links a repository-owned `cmux-workbench.ts` companion beside cmux's generated `cmux-session.ts`; it never edits or duplicates the generated hook/feed bridge. Inside cmux, Pi keeps the active tab title in `task · state` form and updates workspace description, one namespaced status pill, phase progress, and sparse transition logs through stable cmux CLI commands. Explicit workspace/surface IDs prevent focus-dependent routing, command arguments are spawned without a shell, updates serialize, text is bounded, and missing cmux state fails soft.
+
+The generated cmux extension remains the single owner of ordinary parent completion notifications. The companion adds deduplicated notifications only for explicit subagent needs-attention/supervisor requests, failed asynchronous/background work, and terminal Workbench command outcomes. Routine child completion, process-terminal telemetry, and `SubagentStop` feed events never notify.
 
 Routing also adds three contextual concept packs:
 

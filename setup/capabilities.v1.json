@@ -72,11 +72,13 @@
     ],
     "extensions": [
       "cmux-session.ts",
+      "cmux-workbench.ts",
       "pi-look",
       "pi-workbench",
       "startup-header.ts"
     ],
     "extensionLinks": {
+      "cmux-workbench.ts": "pi-workbench/setup/cmux-workbench.ts",
       "pi-look": "pi-workbench/setup/pi-look",
       "startup-header.ts": "pi-workbench/startup-header.ts"
     },

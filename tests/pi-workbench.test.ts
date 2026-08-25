@@ -146,9 +146,9 @@ describe("Pi workflow routing", () => {
   });
 
   test("routes workflow agents from task effort rather than fixed role assignments", () => {
-    expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Find one symbol.")?.model).toBe("openai-codex/gpt-5.3-codex-spark:low");
+    expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Find one symbol.")?.model).toBe("openai-codex/gpt-5.6-luna:low");
     expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Investigate a hard cross-cutting concurrency root cause across services.")?.model).toBe("openai-codex/gpt-5.6-sol:high");
-    expect(resolveWorkflowAgent("planner", DEFAULT_CONFIG, "Draft a bounded local rename plan.", "light")?.model).toBe("openai-codex/gpt-5.3-codex-spark:low");
+    expect(resolveWorkflowAgent("planner", DEFAULT_CONFIG, "Draft a bounded local rename plan.", "light")?.model).toBe("openai-codex/gpt-5.6-luna:low");
     expect(getWorkflowAgentProfile("task implementer")?.id).toBe("task-implementer");
   });
 

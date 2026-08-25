@@ -84,8 +84,12 @@ const approvedCapabilities = {
   inventory: {
     packages: approvedPackagePolicies.map(({ source }) => source),
     packagePolicies: approvedPackagePolicies,
-    extensions: ["cmux-session.ts", "pi-look", "pi-workbench", "startup-header.ts"],
-    extensionLinks: { "pi-look": "pi-workbench/setup/pi-look", "startup-header.ts": "pi-workbench/startup-header.ts" },
+    extensions: ["cmux-session.ts", "cmux-workbench.ts", "pi-look", "pi-workbench", "startup-header.ts"],
+    extensionLinks: {
+      "cmux-workbench.ts": "pi-workbench/setup/cmux-workbench.ts",
+      "pi-look": "pi-workbench/setup/pi-look",
+      "startup-header.ts": "pi-workbench/startup-header.ts",
+    },
     themes: ["ember.json"],
     themeLinks: { "ember.json": "extensions/pi-workbench/setup/themes/ember.json" },
   },

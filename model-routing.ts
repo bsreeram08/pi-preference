@@ -82,14 +82,14 @@ function stateLabel(state: ModelRoutingState): string {
 
 function stateDescription(state: ModelRoutingState): string {
   if (state.policy === "fixed" && state.fixed) {
-    return `Fixed child route for this session: \`${state.fixed.model}\` (${state.fixed.thinking}). Main Pi is unchanged because Pi's model setter persists global defaults. To fix the parent too without changing settings, launch it with \`pi --model ${state.fixed.model.replace(/:(?:low|medium|high)$/, "")} --thinking ${state.fixed.thinking}\`.`;
+    return `Fixed child route for this session: \`${state.fixed.model}\` (${state.fixed.thinking}). Main Pi keeps its current model; the session override changes delegated children only. To override the parent temporarily, launch it with \`pi --model ${state.fixed.model.replace(/:(?:low|medium|high)$/, "")} --thinking ${state.fixed.thinking}\`.`;
   }
   return `${state.policy[0].toUpperCase()}${state.policy.slice(1)} adaptive routing is active. New sessions use the durable project policy (balanced by default).`;
 }
 
 function nativeRoutingGuidance(state: ModelRoutingState): string {
   const fixed = state.policy === "fixed" && state.fixed
-    ? ` Fixed mode is active: use ${state.fixed.model} with ${state.fixed.thinking} thinking as every workflow default unless the user explicitly changes the session route. Main Pi remains unchanged to avoid persistent global model settings.`
+    ? ` Fixed mode is active: use ${state.fixed.model} with ${state.fixed.thinking} thinking as every workflow default unless the user explicitly changes the session route. Main Pi keeps its current model; fixed mode changes delegated children only.`
     : "";
   return `Adaptive delegation routing: before every pi-subagents runs.run/runs.all launch, classify each lane independently from complexity, uncertainty, risk, breadth, and verification cost; role is only a prior. Set each lane's model with its thinking suffix explicitly (for example, :low/:medium/:high). Balanced routes are light=${BALANCED_ROUTES.light.model}, standard=${BALANCED_ROUTES.standard.model}, heavy=${BALANCED_ROUTES.heavy.model}. A hard scout/recon lane can and should reach Sol; never use Spark for image/visual work. Before launch, show one compact line with role, model/thinking, reason, and read-only budget. For read-only lanes use 8 turns/30 tools (light), 16/60 (standard), or 30/120 (heavy), with stop-and-synthesize guidance. Put turnBudget/toolBudget at workflow defaults only when all children share that read-only budget; otherwise keep differently budgeted lanes in separate calls and set per-child toolBudget where supported. Never hard-cap mutation-capable workers.${fixed}`;
 }
@@ -122,7 +122,7 @@ export function registerModelRouting(
   };
 
   const showState = (ctx: ExtensionContext): void => {
-    const body = `${stateDescription(state)}\n\n- \`balanced\`: Spark/low → Terra/medium → Sol/high by task effort\n- \`economy\`: prefers Spark and promotes heavy work to Terra\n- \`quality\`: starts at Terra and promotes standard/heavy work to Sol\n- \`fixed <model-or-alias>\`: session-only fixed child route (\`spark\`, \`luna\`, \`terra\`, \`sol\`, or an available \`openai-codex/<model>[:thinking]\`); Main Pi remains unchanged to avoid global settings writes\n- \`reset\`: restore the durable project route (${durablePolicy}) for this session`;
+    const body = `${stateDescription(state)}\n\n- \`balanced\`: Luna/low for light work, Terra/medium for standard work, and Sol/high for heavy work\n- \`economy\`: Luna for light work, Spark for standard work, and Terra for heavy work\n- \`quality\`: Terra for light work and Sol/high for standard or heavy work\n- \`fixed <model-or-alias>\`: session-only fixed child route (\`spark\`, \`luna\`, \`terra\`, \`sol\`, or an available \`openai-codex/<model>[:thinking]\`); Main Pi keeps its current model\n- \`reset\`: restore the durable project route (${durablePolicy}) for this session`;
     if (report) report("Model routing", body);
     else if (ctx.hasUI) ctx.ui.notify(body, "info");
   };

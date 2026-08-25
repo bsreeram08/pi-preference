@@ -67,13 +67,15 @@ def validate_evolution(value: dict[str, Any], path: pathlib.Path) -> None:
 
 def merge_settings(current: dict[str, Any], baseline: dict[str, Any]) -> dict[str, Any]:
     merged = dict(current)
+    authoritative_keys = {"defaultProvider", "defaultModel", "defaultThinkingLevel", "theme"}
     for key, value in baseline.items():
         if key == "packages":
             existing = merged.get(key) if isinstance(merged.get(key), list) else []
             merged[key] = list(dict.fromkeys([*existing, *value]))
+        elif key in authoritative_keys:
+            merged[key] = value
         else:
             merged.setdefault(key, value)
-    merged["theme"] = "ember"
     return merged
 
 
@@ -100,6 +102,27 @@ def merge_evolution(current: dict[str, Any], baseline: dict[str, Any]) -> dict[s
         else:
             merged.setdefault(key, value)
     return merged
+
+
+def linked_worktree_uses_primary_gitdir(root: pathlib.Path, target_extension: pathlib.Path) -> bool:
+    git_file = root / ".git"
+    target_git_dir = target_extension / ".git"
+    if not git_file.is_file() or git_file.is_symlink() or not target_git_dir.is_dir():
+        return False
+    try:
+        marker = git_file.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as error:
+        raise ConfigError(f"cannot inspect worktree metadata: {git_file}") from error
+    if not marker.startswith("gitdir:"):
+        raise ConfigError(f"invalid worktree metadata: {git_file}")
+    raw_git_dir = pathlib.Path(marker.removeprefix("gitdir:").strip())
+    git_dir = (raw_git_dir if raw_git_dir.is_absolute() else root / raw_git_dir).resolve()
+    worktrees_dir = (target_git_dir.resolve() / "worktrees")
+    try:
+        git_dir.relative_to(worktrees_dir)
+        return True
+    except ValueError:
+        return False
 
 
 def encoded_json(value: dict[str, Any]) -> bytes:
@@ -191,12 +214,22 @@ def apply_plan(plan: list[tuple[pathlib.Path, bytes, int, str]], backup_root: pa
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("preflight", "apply"))
+    parser.add_argument("action", choices=("preflight", "apply", "relationship"))
     parser.add_argument("--agent-dir", required=True, type=pathlib.Path)
     parser.add_argument("--root", required=True, type=pathlib.Path)
     parser.add_argument("--backup-root", type=pathlib.Path)
+    parser.add_argument("--target-extension", type=pathlib.Path)
     parser.add_argument("--full", action="store_true")
     arguments = parser.parse_args()
+
+    if arguments.action == "relationship":
+        if arguments.target_extension is None:
+            parser.error("--target-extension is required for relationship")
+        if linked_worktree_uses_primary_gitdir(arguments.root, arguments.target_extension):
+            print("linked worktree depends on the target extension's Git metadata")
+            return 3
+        print("worktree relationship: safe")
+        return 0
 
     if not arguments.full:
         print("opinionated profile: not requested")
