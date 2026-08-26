@@ -18,10 +18,28 @@ const COMMIT = /^[0-9a-f]{40,64}$/;
 const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_RELEASE_BYTES = 256 * 1024;
 const MAX_RELEASE_PAGES = 10;
+const MAX_IGNORED_FILES = 20_000;
+const MAX_IGNORED_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_IGNORED_TOTAL_BYTES = 128 * 1024 * 1024;
 const RELEASE_TIMEOUT_MS = 5_000;
 const GIT_TIMEOUT_MS = 30_000;
 const INSTALL_TIMEOUT_MS = 15 * 60_000;
 const SAFE_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+const IGNORED_FINGERPRINT_PATHS = [
+  ".",
+  ":(exclude,glob)node_modules/**",
+  ":(exclude,glob)**/node_modules/**",
+  ":(exclude,glob)dist/**",
+  ":(exclude,glob)**/dist/**",
+  ":(exclude,glob)coverage/**",
+  ":(exclude,glob)**/coverage/**",
+  ":(exclude,glob).cache/**",
+  ":(exclude,glob)**/.cache/**",
+  ":(exclude,glob).reprompter/**",
+  ":(exclude,glob)**/.reprompter/**",
+  ":(exclude,glob)__pycache__/**",
+  ":(exclude,glob)**/__pycache__/**",
+] as const;
 const SAFE_GIT_ENV = [
   "-i",
   `HOME=${os.homedir()}`,
@@ -126,6 +144,7 @@ interface BackupSnapshot {
   readonly oldCommit: string;
   readonly submodules: string;
   readonly checkout: CheckoutSnapshot;
+  readonly ignoredFingerprint: string;
   readonly files: readonly FileSnapshot[];
   readonly recovery: BackupRecovery;
 }
@@ -286,6 +305,14 @@ function parseProfile(value: unknown): UpdateProfile | undefined {
 function safeRelativeSubmodule(value: string): boolean {
   return value.length > 0
     && value.length <= 256
+    && !path.isAbsolute(value)
+    && !value.includes("\\")
+    && !value.split("/").some((part) => part === "" || part === "." || part === "..");
+}
+
+function safeRelativeIgnoredPath(value: string): boolean {
+  return value.length > 0
+    && value.length <= 4_096
     && !path.isAbsolute(value)
     && !value.includes("\\")
     && !value.split("/").some((part) => part === "" || part === "." || part === "..");
@@ -636,6 +663,42 @@ export class WorkbenchUpdater {
     return this.captureCheckoutAt(this.root, false);
   }
 
+  private async ignoredCheckoutFingerprint(root: string): Promise<string> {
+    const digest = createHash("sha256");
+    let count = 0;
+    let totalBytes = 0;
+    for (const [label, directory] of [["root", root], ["reprompter", path.join(root, "reprompter")]] as const) {
+      const result = await this.gitAt(directory, [
+        "ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ...IGNORED_FINGERPRINT_PATHS,
+      ]);
+      const relatives = result.stdout.split("\0").filter(Boolean).sort();
+      digest.update(`${label}\0${relatives.length}\0`);
+      for (const relative of relatives) {
+        if (!safeRelativeIgnoredPath(relative)) throw new UpdateFailure("UPDATE_FAILED");
+        count += 1;
+        if (count > MAX_IGNORED_FILES) throw new UpdateFailure("UPDATE_FAILED");
+        const pathname = path.join(directory, relative);
+        const contained = path.relative(directory, pathname);
+        if (contained === ".." || contained.startsWith(`..${path.sep}`) || path.isAbsolute(contained)) {
+          throw new UpdateFailure("UPDATE_FAILED");
+        }
+        const stat = await fs.lstat(pathname);
+        digest.update(`${relative}\0${stat.mode & 0o7777}\0`);
+        if (stat.isSymbolicLink()) {
+          digest.update(`link\0${await fs.readlink(pathname)}\0`);
+          continue;
+        }
+        if (!stat.isFile() || stat.size > MAX_IGNORED_FILE_BYTES) throw new UpdateFailure("UPDATE_FAILED");
+        totalBytes += stat.size;
+        if (totalBytes > MAX_IGNORED_TOTAL_BYTES) throw new UpdateFailure("UPDATE_FAILED");
+        digest.update("file\0");
+        digest.update(await fs.readFile(pathname));
+        digest.update("\0");
+      }
+    }
+    return digest.digest("hex");
+  }
+
   private managedSources(profile: UpdateProfile): Array<readonly [string, "file" | "directory"]> {
     const sources: Array<readonly [string, "file" | "directory"]> = [
       ["setup/cmux-workbench.ts", "file"],
@@ -945,6 +1008,7 @@ export class WorkbenchUpdater {
         }
       }
       const checkout = await this.captureCheckout();
+      const ignoredFingerprint = await this.ignoredCheckoutFingerprint(this.root);
       const backedUpSubmodule = parseSubmoduleStatus(status.submodules).commit;
       if (checkout.head !== status.currentCommit
         || checkout.submoduleHead !== backedUpSubmodule
@@ -985,6 +1049,9 @@ export class WorkbenchUpdater {
         verbatimSymlinks: true,
       });
       await this.validateTrustedCheckout(checkoutSnapshot, checkout, status.submodules);
+      if (await this.ignoredCheckoutFingerprint(checkoutSnapshot) !== ignoredFingerprint) {
+        throw new UpdateFailure("BACKUP_FAILED");
+      }
       const recovery: BackupRecovery = {
         transactionRoot,
         checkoutSnapshot,
@@ -998,6 +1065,7 @@ export class WorkbenchUpdater {
         oldCommit: status.currentCommit,
         submodules: status.submodules,
         checkout,
+        ignoredFingerprint,
         files: files.map(({ relativePath, backupName, exists, mode, hash: digest }) => ({ relativePath, backupName, exists, mode, hash: digest })),
         recovery: {
           transactionRoot: recovery.transactionRoot,
@@ -1007,7 +1075,7 @@ export class WorkbenchUpdater {
         },
       };
       await atomicWrite(path.join(backupRoot, "manifest.json"), Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`), 0o600);
-      return { id, root: backupRoot, oldCommit: status.currentCommit, submodules: status.submodules, checkout, files, recovery };
+      return { id, root: backupRoot, oldCommit: status.currentCommit, submodules: status.submodules, checkout, ignoredFingerprint, files, recovery };
     } catch (error) {
       if (error instanceof UpdateFailure) throw error;
       throw new UpdateFailure("BACKUP_FAILED");
@@ -1208,7 +1276,8 @@ export class WorkbenchUpdater {
 
     let classified = false;
     try {
-      classified = this.rollbackStateIsExpected(await this.captureRollbackCheckout(), backup, inputs);
+      classified = this.rollbackStateIsExpected(await this.captureRollbackCheckout(), backup, inputs)
+        && await this.ignoredCheckoutFingerprint(this.root) === backup.ignoredFingerprint;
     } catch {
       classified = false;
     }
@@ -1219,7 +1288,8 @@ export class WorkbenchUpdater {
 
       await this.afterRollbackCheckoutAuthorization?.("preserve-failed-checkout");
       try {
-        if (!this.rollbackStateIsExpected(await this.captureRollbackCheckout(), backup, inputs)) classified = false;
+        if (!this.rollbackStateIsExpected(await this.captureRollbackCheckout(), backup, inputs)
+          || await this.ignoredCheckoutFingerprint(this.root) !== backup.ignoredFingerprint) classified = false;
       } catch {
         classified = false;
       }

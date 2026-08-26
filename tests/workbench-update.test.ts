@@ -105,6 +105,7 @@ async function createFixture(profile: UpdateProfile = "default"): Promise<Fixtur
   git(source, "config", "user.email", "updater@example.invalid");
   command("git", ["-c", "protocol.file.allow=always", "submodule", "add", subRemote, "reprompter"], source);
   await fs.writeFile(path.join(source, ".gitmodules"), `[submodule "reprompter"]\n\tpath = reprompter\n\turl = ${TRUSTED_REPROMPTER}\n`);
+  await fs.writeFile(path.join(source, ".gitignore"), ".env\n.env.*\n.pi/\nsessions/\nnode_modules/\n");
   await fs.writeFile(path.join(source, "package.json"), '{"name":"pi-workbench","version":"1.0.0","private":true,"type":"module"}\n');
   await fs.writeFile(path.join(source, "install.sh"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
   await fs.writeFile(path.join(source, "index.ts"), "export default function fixture() {}\n");
@@ -734,6 +735,25 @@ describe("Pi Workbench updater apply transaction", () => {
       expect(await fs.stat(manifestPath)).toBeDefined();
     }
   }, 30_000);
+
+  test("detects ignored checkout changes and preserves both old and live values", async () => {
+    const fixture = await createFixture();
+    const ignored = path.join(fixture.root, ".env");
+    const original = Buffer.from("ORIGINAL_SECRET=before\n");
+    const concurrent = Buffer.from("ORIGINAL_SECRET=changed-during-update\n");
+    await fs.writeFile(ignored, original, { mode: 0o600 });
+    fixture.controls.installerExit = 1;
+    fixture.controls.installer = async () => { await fs.writeFile(ignored, concurrent, { mode: 0o600 }); };
+
+    const result = await apply(fixture.updater(fakeReleases([release("v1.1.0")])));
+    expect(result).toMatchObject({ category: "blocked", code: "ROLLBACK_INCOMPLETE", reload: false });
+    const manifest = JSON.parse(await fs.readFile(
+      path.join(fixture.agentDir, "backups", "update", result.backupId!, "manifest.json"),
+      "utf8",
+    )) as { recovery: { failedCheckout: string } };
+    expect(await fs.readFile(ignored)).toEqual(original);
+    expect(await fs.readFile(path.join(manifest.recovery.failedCheckout, ".env"))).toEqual(concurrent);
+  });
 
   test("preserves tracked, untracked, and managed-config races after merge before state observation", async () => {
     for (const scenario of ["tracked", "untracked", "config"] as const) {
