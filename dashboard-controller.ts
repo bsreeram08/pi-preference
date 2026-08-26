@@ -100,7 +100,7 @@ export class WorkbenchDashboardController {
   private handleInput(data: string): { consume?: boolean; data?: string } | undefined {
     if (this.overlayOpen) return undefined;
 
-    if (matchesKey(data, "ctrl+down")) {
+    if (matchesKey(data, "ctrl+alt+down")) {
       this.state.setFocused(true);
       return { consume: true };
     }
