@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { acquireExclusiveLeaseAtPath, type ExclusiveLease } from "./exclusive-lease.ts";
+import { acquireUpdateExclusiveLease, type ExclusiveLease } from "./exclusive-lease.ts";
 import type { Exec, ExecResult } from "./types.ts";
 
 const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-preference.git";
@@ -18,6 +18,9 @@ const COMMIT = /^[0-9a-f]{40,64}$/;
 const MAX_COMMAND_BYTES = 64 * 1024;
 const MAX_RELEASE_BYTES = 256 * 1024;
 const MAX_RELEASE_PAGES = 10;
+const MAX_AUDIT_BYTES = 256 * 1024;
+const MAX_AUDIT_LINES = 2_048;
+const MAX_AUDIT_LINE_BYTES = 2_048;
 const MAX_IGNORED_FILES = 20_000;
 const MAX_IGNORED_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_IGNORED_TOTAL_BYTES = 128 * 1024 * 1024;
@@ -78,6 +81,8 @@ export type UpdateCode =
   | "RELEASES_UNAVAILABLE"
   | "RELEASES_MALFORMED"
   | "RELEASES_OVERSIZE"
+  | "AUDIT_INVALID"
+  | "BOOTSTRAP_CONSUMED"
   | "CANDIDATE_INVALID"
   | "CANDIDATE_CHANGED"
   | "LOCK_BLOCKED"
@@ -390,6 +395,74 @@ function validBackupId(value: string): boolean {
   return /^[0-9TZ.-]{10,40}-[0-9a-f-]{16,40}$/i.test(value);
 }
 
+function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function validAuditTimestamp(value: unknown): value is string {
+  return typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+
+type ParsedAuditLine =
+  | { readonly kind: "cleanup" }
+  | { readonly kind: "outcome"; readonly backupId: string; readonly outcome: "SUCCESS" | "ROLLED_BACK" | "ROLLBACK_INCOMPLETE"; readonly channel: UpdateChannel };
+
+function parseAuditLine(line: string): ParsedAuditLine {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    throw new UpdateFailure("AUDIT_INVALID");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new UpdateFailure("AUDIT_INVALID");
+  const record = value as Record<string, unknown>;
+  if ("event" in record) {
+    const keys = ["backupId", "event", "result", "timestamp", "version"];
+    if (!exactKeys(record, keys)
+      || record.version !== 1
+      || record.event !== "CHECKOUT_SNAPSHOT_CLEANUP"
+      || (record.result !== "REMOVED" && record.result !== "RETAINED")
+      || !validAuditTimestamp(record.timestamp)
+      || typeof record.backupId !== "string"
+      || !validBackupId(record.backupId)) {
+      throw new UpdateFailure("AUDIT_INVALID");
+    }
+    return { kind: "cleanup" };
+  }
+
+  const keys = [
+    "backupId", "candidateCommit", "channel", "checkoutRecovery", "configRecovery", "oldCommit",
+    "outcome", "profile", "tag", "timestamp", "version",
+  ];
+  if (!exactKeys(record, keys)
+    || record.version !== 1
+    || !validAuditTimestamp(record.timestamp)
+    || typeof record.oldCommit !== "string"
+    || !COMMIT.test(record.oldCommit)
+    || typeof record.candidateCommit !== "string"
+    || !COMMIT.test(record.candidateCommit)
+    || (record.profile !== "default" && record.profile !== "full")
+    || (record.channel !== "stable" && record.channel !== "main-bootstrap")
+    || typeof record.tag !== "string"
+    || (record.channel === "stable" ? !STABLE_TAG.test(record.tag) : record.tag !== "main")
+    || (record.outcome !== "SUCCESS" && record.outcome !== "ROLLED_BACK" && record.outcome !== "ROLLBACK_INCOMPLETE")
+    || (record.checkoutRecovery !== "FAILED_CHECKOUT_PRESERVED"
+      && record.checkoutRecovery !== "SNAPSHOT_PENDING_CLEANUP"
+      && record.checkoutRecovery !== "SNAPSHOT_RETAINED")
+    || (record.configRecovery !== "PRESERVED" && record.configRecovery !== "NONE")
+    || typeof record.backupId !== "string"
+    || !validBackupId(record.backupId)) {
+    throw new UpdateFailure("AUDIT_INVALID");
+  }
+  return {
+    kind: "outcome",
+    backupId: record.backupId as string,
+    outcome: record.outcome as "SUCCESS" | "ROLLED_BACK" | "ROLLBACK_INCOMPLETE",
+    channel: record.channel as UpdateChannel,
+  };
+}
+
 async function ensureRealDirectory(directory: string, create: boolean): Promise<void> {
   if (create) await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const stat = await fs.lstat(directory).catch((error) => {
@@ -501,7 +574,7 @@ export class WorkbenchUpdater {
     this.fetchImpl = dependencies.fetch ?? fetch;
     this.now = dependencies.now ?? (() => new Date());
     this.createId = dependencies.createId ?? randomUUID;
-    this.acquireLease = dependencies.acquireLease ?? ((root, lockPath) => acquireExclusiveLeaseAtPath(root, lockPath, "workbench-update"));
+    this.acquireLease = dependencies.acquireLease ?? ((root) => acquireUpdateExclusiveLease(root, { agentDir: this.agentDir }));
     this.afterInstallerSnapshot = dependencies.afterInstallerSnapshot;
     this.afterRollbackCheckoutAuthorization = dependencies.afterRollbackCheckoutAuthorization;
     this.afterRollbackConfigAuthorization = dependencies.afterRollbackConfigAuthorization;
@@ -710,7 +783,8 @@ export class WorkbenchUpdater {
   }
 
   private async validateManagedSourcesAtCommit(commit: string, profile: UpdateProfile): Promise<void> {
-    const sources = this.managedSources(profile);
+    const linkProfile = profile === "full" || await this.retainedStartupLinkIsManaged() ? "full" : "default";
+    const sources = this.managedSources(linkProfile);
     const result = await this.git(["ls-tree", "-z", commit, "--", ...sources.map(([relative]) => relative)]);
     const records = result.stdout.split("\0").filter(Boolean);
     if (records.length !== sources.length) throw new UpdateFailure("CANDIDATE_INVALID");
@@ -730,6 +804,14 @@ export class WorkbenchUpdater {
     }
   }
 
+  private async retainedStartupLinkIsManaged(): Promise<boolean> {
+    const link = path.join(this.agentDir, "extensions", "startup-header.ts");
+    await assertSafeParents(this.agentDir, link);
+    const stat = await fs.lstat(link).catch((error) => isMissing(error) ? undefined : Promise.reject(error));
+    if (!stat?.isSymbolicLink()) return false;
+    return path.resolve(path.dirname(link), await fs.readlink(link)) === path.join(this.root, "startup-header.ts");
+  }
+
   private async assertExpectedLinks(profile: UpdateProfile): Promise<void> {
     const extensionLink = path.join(this.agentDir, "extensions", "pi-workbench");
     if (extensionLink !== this.root) {
@@ -742,7 +824,8 @@ export class WorkbenchUpdater {
     const linkFor = (relative: string): string => relative === "setup/themes/ember.json"
       ? path.join(this.agentDir, "themes", "ember.json")
       : path.join(this.agentDir, "extensions", relative === "startup-header.ts" ? relative : path.basename(relative));
-    for (const [relative, kind] of this.managedSources(profile)) {
+    const linkProfile = profile === "full" || await this.retainedStartupLinkIsManaged() ? "full" : "default";
+    for (const [relative, kind] of this.managedSources(linkProfile)) {
       const link = linkFor(relative);
       const expected = path.join(this.root, relative);
       await assertSafeParents(this.agentDir, link);
@@ -829,6 +912,52 @@ export class WorkbenchUpdater {
     return { currentCommit, currentVersion, profile, submodules };
   }
 
+  private async mainBootstrapConsumed(): Promise<boolean> {
+    const auditPath = path.join(this.agentDir, "update", "pi-workbench", "audit.jsonl");
+    await assertSafeParents(this.agentDir, auditPath);
+    const existing = await fs.lstat(auditPath).catch((error) => isMissing(error) ? undefined : Promise.reject(error));
+    if (!existing) return false;
+    if (!existing.isFile() || existing.isSymbolicLink() || existing.size === 0 || existing.size > MAX_AUDIT_BYTES) {
+      throw new UpdateFailure("AUDIT_INVALID");
+    }
+
+    let handle: fs.FileHandle;
+    try {
+      handle = await fs.open(auditPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    } catch {
+      throw new UpdateFailure("AUDIT_INVALID");
+    }
+    try {
+      const opened = await handle.stat();
+      if (!opened.isFile() || (opened.mode & 0o7777) !== 0o600 || opened.size === 0 || opened.size > MAX_AUDIT_BYTES) {
+        throw new UpdateFailure("AUDIT_INVALID");
+      }
+      const bytes = Buffer.alloc(MAX_AUDIT_BYTES + 1);
+      let offset = 0;
+      for (;;) {
+        const read = await handle.read(bytes, offset, bytes.length - offset, offset);
+        offset += read.bytesRead;
+        if (offset > MAX_AUDIT_BYTES) throw new UpdateFailure("AUDIT_INVALID");
+        if (read.bytesRead === 0) break;
+      }
+      const finalStat = await handle.stat();
+      if (finalStat.size !== offset) throw new UpdateFailure("AUDIT_INVALID");
+      const text = bytes.subarray(0, offset).toString("utf8");
+      if (!text.endsWith("\n") || Buffer.from(text, "utf8").length !== offset) throw new UpdateFailure("AUDIT_INVALID");
+      const lines = text.slice(0, -1).split("\n");
+      if (lines.length === 0 || lines.length > MAX_AUDIT_LINES) throw new UpdateFailure("AUDIT_INVALID");
+      const terminalByBackup = new Map<string, Extract<ParsedAuditLine, { kind: "outcome" }>>();
+      for (const line of lines) {
+        if (!line || byteLength(line) > MAX_AUDIT_LINE_BYTES) throw new UpdateFailure("AUDIT_INVALID");
+        const parsed = parseAuditLine(line);
+        if (parsed.kind === "outcome") terminalByBackup.set(parsed.backupId, parsed);
+      }
+      return [...terminalByBackup.values()].some((record) => record.outcome === "SUCCESS" && record.channel === "main-bootstrap");
+    } finally {
+      await handle.close();
+    }
+  }
+
   private async releaseCandidate(): Promise<Candidate> {
     const signal = AbortSignal.timeout(RELEASE_TIMEOUT_MS);
     const releases: unknown[] = [];
@@ -884,6 +1013,9 @@ export class WorkbenchUpdater {
       };
       const candidate = await this.releaseCandidate();
       partial = { ...partial, candidate: candidate.label, channel: candidate.channel, sourceRef: candidate.sourceRef };
+      if (candidate.channel === "main-bootstrap" && await this.mainBootstrapConsumed()) {
+        return { category: "no-update", code: "BOOTSTRAP_CONSUMED", ...partial };
+      }
       const candidateCommit = await this.fetchCandidate(candidate);
       partial = { ...partial, candidateCommit };
       await this.validateGitmodules(candidateCommit);
@@ -1157,7 +1289,7 @@ export class WorkbenchUpdater {
     }
   }
 
-  private async assertLiveFilesExpected(
+  private async assertLiveFilesRecoverable(
     original: readonly FileSnapshot[],
     expected: readonly FileSnapshot[],
   ): Promise<void> {
@@ -1165,6 +1297,13 @@ export class WorkbenchUpdater {
     if (current.length !== original.length
       || expected.length !== original.length
       || current.some((item, index) => !sameFile(item, original[index]) && !sameFile(item, expected[index]))) {
+      throw new UpdateFailure("UPDATE_FAILED");
+    }
+  }
+
+  private async assertLiveFilesExpected(expected: readonly FileSnapshot[]): Promise<void> {
+    const current = await this.snapshotManagedFiles();
+    if (current.length !== expected.length || current.some((item, index) => !sameFile(item, expected[index]))) {
       throw new UpdateFailure("UPDATE_FAILED");
     }
   }
@@ -1349,7 +1488,10 @@ export class WorkbenchUpdater {
     await ensureRealDirectory(directory, true);
     const auditPath = path.join(directory, "audit.jsonl");
     const existing = await fs.lstat(auditPath).catch((error) => isMissing(error) ? undefined : Promise.reject(error));
-    if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw new UpdateFailure("UPDATE_FAILED");
+    if (existing && (!existing.isFile()
+      || existing.isSymbolicLink()
+      || (existing.mode & 0o7777) !== 0o600
+      || existing.size > MAX_AUDIT_BYTES)) throw new UpdateFailure("UPDATE_FAILED");
     const record = {
       version: 1,
       timestamp: this.now().toISOString(),
@@ -1368,7 +1510,7 @@ export class WorkbenchUpdater {
       configRecovery: backup.recovery.configValuesPreserved ? "PRESERVED" : "NONE",
     };
     const encoded = `${JSON.stringify(record)}\n`;
-    if (byteLength(encoded) > 2_048) throw new UpdateFailure("UPDATE_FAILED");
+    if (byteLength(encoded) > MAX_AUDIT_LINE_BYTES) throw new UpdateFailure("UPDATE_FAILED");
     const handle = await fs.open(
       auditPath,
       fsConstants.O_APPEND | fsConstants.O_CREAT | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
@@ -1376,7 +1518,7 @@ export class WorkbenchUpdater {
     );
     try {
       const stat = await handle.stat();
-      if (!stat.isFile()) throw new UpdateFailure("UPDATE_FAILED");
+      if (!stat.isFile() || stat.size + byteLength(encoded) > MAX_AUDIT_BYTES) throw new UpdateFailure("UPDATE_FAILED");
       await handle.chmod(0o600);
       const secured = await handle.stat();
       if ((secured.mode & 0o7777) !== 0o600) throw new UpdateFailure("UPDATE_FAILED");
@@ -1398,6 +1540,7 @@ export class WorkbenchUpdater {
       backupId: backup.id,
     };
     const encoded = `${JSON.stringify(record)}\n`;
+    if (byteLength(encoded) > MAX_AUDIT_LINE_BYTES) throw new UpdateFailure("UPDATE_FAILED");
     const handle = await fs.open(
       auditPath,
       fsConstants.O_APPEND | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
@@ -1405,7 +1548,9 @@ export class WorkbenchUpdater {
     );
     try {
       const stat = await handle.stat();
-      if (!stat.isFile() || (stat.mode & 0o7777) !== 0o600) throw new UpdateFailure("UPDATE_FAILED");
+      if (!stat.isFile()
+        || (stat.mode & 0o7777) !== 0o600
+        || stat.size + byteLength(encoded) > MAX_AUDIT_BYTES) throw new UpdateFailure("UPDATE_FAILED");
       await handle.writeFile(encoded, "utf8");
       await handle.sync();
     } finally {
@@ -1485,10 +1630,14 @@ export class WorkbenchUpdater {
         } catch (error) {
           installFailure = error;
         }
-        await this.assertLiveFilesExpected(backup.files, expectedFiles);
         await this.afterInstallerSnapshot?.();
-        if (installFailure || !install || install.code !== 0 || install.killed) throw new UpdateFailure("UPDATE_FAILED");
+        if (installFailure || !install || install.code !== 0 || install.killed) {
+          await this.assertLiveFilesRecoverable(backup.files, expectedFiles);
+          throw new UpdateFailure("UPDATE_FAILED");
+        }
+        await this.assertLiveFilesExpected(expectedFiles);
         await this.postverify(finalPreflight.candidateCommit, revalidated.profile);
+        await this.assertLiveFilesExpected(expectedFiles);
         await this.audit("SUCCESS", revalidated, backup);
         const snapshotCleanup = await this.cleanupCheckoutSnapshot(backup) ? "REMOVED" : "RETAINED";
         await this.auditSnapshotCleanup(backup, snapshotCleanup).catch(() => undefined);
@@ -1534,6 +1683,9 @@ export function formatUpdateStatus(status: WorkbenchUpdateStatus): string {
   if ("backupId" in status && typeof status.backupId === "string") lines.push(`Backup: ${status.backupId}`);
   if (status.code === "PROFILE_REQUIRED") {
     lines.push("Action: rerun ./install.sh or ./install.sh --full once for the desired profile, then retry.");
+  }
+  if (status.code === "BOOTSTRAP_CONSUMED") {
+    lines.push("Action: wait for a stable release; the one-time main bootstrap has already succeeded.");
   }
   if (status.code === "ROLLBACK_INCOMPLETE") {
     lines.push("Action: inspect the preserved update backup before another attempt.");

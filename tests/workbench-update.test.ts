@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ExclusiveLeaseError, type ExclusiveLease } from "../exclusive-lease.ts";
+import { acquireExclusiveLease, ExclusiveLeaseError, type ExclusiveLease } from "../exclusive-lease.ts";
 import type { Exec, ExecResult } from "../types.ts";
 import {
   registerWorkbenchUpdate,
@@ -153,11 +153,13 @@ async function createFixture(profile: UpdateProfile = "default"): Promise<Fixtur
   let finalPreflightHookRun = false;
   let mergeHookRun = false;
   let installerRan = false;
+  let fixture!: Fixture;
   const exec: Exec = async (commandName, originalArgs) => {
     calls.push({ command: commandName, args: [...originalArgs] });
     if (commandName === path.join(root, "install.sh")) {
       installerRan = true;
       if (controls.installer) await controls.installer(profile);
+      else applyCandidateConfig(fixture, profile);
       return { stdout: "installer output", stderr: controls.installerStderr ?? "", code: controls.installerExit ?? 0 };
     }
     let args = [...originalArgs];
@@ -199,7 +201,7 @@ async function createFixture(profile: UpdateProfile = "default"): Promise<Fixtur
     } satisfies ExecResult;
   };
 
-  const fixture: Fixture = {
+  fixture = {
     root,
     agentDir,
     source,
@@ -333,6 +335,77 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     const fetchCall = fixture.calls.find((item) => item.command === "env" && item.args.includes("fetch"));
     expect(fetchCall?.args).toContain("+refs/heads/main:refs/pi-workbench-updater/candidate");
   });
+
+  test("consumes main bootstrap after one success, while a later stable release still wins", async () => {
+    const fixture = await createFixture();
+    const emptyReleases = fakeReleases([]);
+    expect(await apply(fixture.updater(emptyReleases))).toMatchObject({
+      category: "updated",
+      code: "UPDATED",
+      channel: "main-bootstrap",
+    });
+
+    const nextMain = await commitInSource(fixture, "second-main", "1.2.0");
+    fixture.pushMain();
+    fixture.calls.length = 0;
+    expect(await fixture.updater(emptyReleases).status()).toMatchObject({
+      category: "no-update",
+      code: "BOOTSTRAP_CONSUMED",
+      channel: "main-bootstrap",
+    });
+    expect(fixture.calls.some((item) => item.args.includes("fetch"))).toBe(false);
+    expect(fixture.calls.some((item) => item.command === path.join(fixture.root, "install.sh"))).toBe(false);
+
+    fixture.tag("v1.2.0", nextMain);
+    expect(await fixture.updater(fakeReleases([release("v1.2.0")])).status()).toMatchObject({
+      category: "update-available",
+      code: "READY",
+      channel: "stable",
+      candidateCommit: nextMain,
+    });
+  }, 15_000);
+
+  test("uses the final outcome per backup when deciding whether bootstrap was consumed", async () => {
+    const fixture = await createFixture();
+    const emptyReleases = fakeReleases([]);
+    const first = await apply(fixture.updater(emptyReleases));
+    expect(first).toMatchObject({ category: "updated", channel: "main-bootstrap" });
+    const auditPath = path.join(fixture.agentDir, "update", "pi-workbench", "audit.jsonl");
+    const records = (await fs.readFile(auditPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+    const success = records.find((record) => record.outcome === "SUCCESS")!;
+    await fs.appendFile(auditPath, `${JSON.stringify({
+      ...success,
+      timestamp: "2026-08-26T12:00:01.000Z",
+      outcome: "ROLLED_BACK",
+      checkoutRecovery: "FAILED_CHECKOUT_PRESERVED",
+    })}\n`);
+
+    const nextMain = await commitInSource(fixture, "bootstrap-after-rollback", "1.2.0");
+    fixture.pushMain();
+    expect(await fixture.updater(emptyReleases).status()).toMatchObject({
+      category: "update-available",
+      code: "READY",
+      channel: "main-bootstrap",
+      candidateCommit: nextMain,
+    });
+  });
+
+  test("fails closed on malformed, symlinked, or oversized bootstrap audit state", async () => {
+    for (const kind of ["malformed", "symlink", "oversize"] as const) {
+      const fixture = await createFixture();
+      const auditPath = path.join(fixture.agentDir, "update", "pi-workbench", "audit.jsonl");
+      if (kind === "malformed") await fs.writeFile(auditPath, "{bad json\n", { mode: 0o600 });
+      if (kind === "oversize") await fs.writeFile(auditPath, "x".repeat(256 * 1024 + 1), { mode: 0o600 });
+      if (kind === "symlink") {
+        const target = path.join(path.dirname(fixture.agentDir), "foreign-audit.jsonl");
+        await fs.writeFile(target, "{}\n", { mode: 0o600 });
+        await fs.symlink(target, auditPath);
+      }
+      fixture.calls.length = 0;
+      expect(await fixture.updater(fakeReleases([])).status()).toMatchObject({ category: "blocked", code: "AUDIT_INVALID" });
+      expect(fixture.calls.some((item) => item.args.includes("fetch"))).toBe(false);
+    }
+  }, 15_000);
 
   test("blocks release API failure, malformed payload, and oversized payload", async () => {
     const fixture = await createFixture();
@@ -502,6 +575,50 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     expect(await wrongKind.updater(fakeReleases([release("v1.2.0")])).status()).toMatchObject({
       category: "blocked",
       code: "CANDIDATE_INVALID",
+    });
+  });
+
+  test("retains startup-header validation after full to default and rejects deletion or dangling candidates", async () => {
+    const fixture = await createFixture("full");
+    await fixture.setProfile("default");
+    git(fixture.source, "rm", "startup-header.ts");
+    git(fixture.source, "commit", "-m", "delete retained startup header");
+    const candidate = git(fixture.source, "rev-parse", "HEAD");
+    fixture.pushMain();
+    fixture.tag("v1.2.0", candidate);
+
+    expect(await fixture.updater(fakeReleases([release("v1.2.0")]), "default").status()).toMatchObject({
+      category: "blocked",
+      code: "CANDIDATE_INVALID",
+    });
+    expect((await fs.lstat(path.join(fixture.agentDir, "extensions", "startup-header.ts"))).isSymbolicLink()).toBe(true);
+  });
+
+  test("allows a fresh default install without startup-header and leaves a foreign startup path unmanaged", async () => {
+    const fresh = await createFixture();
+    await fs.unlink(path.join(fresh.agentDir, "extensions", "startup-header.ts"));
+    expect(await fresh.updater(fakeReleases([release("v1.1.0")])).status()).toMatchObject({ code: "READY" });
+
+    const foreign = await createFixture();
+    const startupPath = path.join(foreign.agentDir, "extensions", "startup-header.ts");
+    await fs.unlink(startupPath);
+    await fs.writeFile(startupPath, "user owned startup\n");
+    expect(await foreign.updater(fakeReleases([release("v1.1.0")])).status()).toMatchObject({ code: "READY" });
+    expect(await fs.readFile(startupPath, "utf8")).toBe("user owned startup\n");
+  });
+
+  test("allows a fresh default profile candidate to omit an unlinked startup header", async () => {
+    const fixture = await createFixture();
+    await fs.unlink(path.join(fixture.agentDir, "extensions", "startup-header.ts"));
+    git(fixture.source, "rm", "startup-header.ts");
+    git(fixture.source, "commit", "-m", "remove unused startup header");
+    const candidate = git(fixture.source, "rev-parse", "HEAD");
+    fixture.pushMain();
+    fixture.tag("v1.2.0", candidate);
+    expect(await fixture.updater(fakeReleases([release("v1.2.0")])).status()).toMatchObject({
+      category: "update-available",
+      code: "READY",
+      candidateCommit: candidate,
     });
   });
 
@@ -685,6 +802,40 @@ describe("Pi Workbench updater apply transaction", () => {
     expect(await apply(updater)).toEqual({ category: "blocked", code: "LOCK_BLOCKED", reload: false });
     expect(fixture.calls).toEqual([]);
   });
+
+  test("blocks before fetch or mutation when a workflow writer is active", async () => {
+    const fixture = await createFixture();
+    const writer = await acquireExclusiveLease(fixture.root, "start-work", { agentDir: fixture.agentDir });
+    fixture.calls.length = 0;
+    try {
+      const updater = new WorkbenchUpdater({
+        root: fixture.root,
+        agentDir: fixture.agentDir,
+        exec: fixture.exec,
+        fetch: fakeReleases([release("v1.1.0")]),
+      });
+      expect(await apply(updater)).toEqual({ category: "blocked", code: "LOCK_BLOCKED", reload: false });
+      expect(fixture.calls).toEqual([]);
+      expect(git(fixture.root, "rev-parse", "HEAD")).toBe(fixture.initial);
+    } finally {
+      await writer.release();
+    }
+  });
+
+  test("rolls back a successful full installer that skips one required deterministic write", async () => {
+    const fixture = await createFixture("full");
+    const settingsPath = path.join(fixture.agentDir, "settings.json");
+    const originalSettings = await fs.readFile(settingsPath);
+    fixture.controls.installer = () => {
+      applyCandidateConfig(fixture, "full");
+      return fs.writeFile(settingsPath, originalSettings);
+    };
+
+    const result = await apply(fixture.updater(fakeReleases([release("v1.1.0")]), "full"));
+    expect(result).toMatchObject({ category: "blocked", code: "ROLLED_BACK", reload: false });
+    expect(git(fixture.root, "rev-parse", "HEAD")).toBe(fixture.initial);
+    expect(await fs.readFile(settingsPath)).toEqual(originalSettings);
+  }, 15_000);
 
   test("rolls back installer, submodule, and postcheck failures and restores exact configuration", async () => {
     const scenarios = ["installer", "submodule", "postcheck"] as const;
