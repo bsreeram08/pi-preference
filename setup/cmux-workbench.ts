@@ -2,20 +2,18 @@ import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  createWorkflowLifecycleEvent,
+  decodeWorkflowLifecycleEvent,
+  workflowLifecycleMetadata,
+  WORKFLOW_LIFECYCLE_EVENT,
+  type WorkflowLifecycleEvent,
+} from "../workflow-lifecycle.ts";
 
-export type CmuxTaskState = "running" | "needs_attention" | "blocked" | "completed" | "failed";
-
-export interface CmuxTaskUpdate {
-  task: string;
-  state: CmuxTaskState;
-  detail?: string;
-  progress?: { value: number; label: string };
-  notify?: boolean;
-}
-
+export type CmuxTaskState = WorkflowLifecycleEvent["state"];
 export type CmuxCommandRunner = (args: readonly string[]) => Promise<boolean>;
 
-interface CmuxEnvironment {
+export interface CmuxEnvironment {
   readonly workspaceId?: string;
   readonly surfaceId?: string;
 }
@@ -34,23 +32,12 @@ interface AttentionEpisode {
   readonly at: number;
   readonly source: "control" | "detach";
   readonly reason?: string;
-  readonly requestId?: string;
 }
 
 const STATUS_KEY = "pi_workbench";
-const TITLE_TASK_LIMIT = 48;
-const DETAIL_LIMIT = 160;
-
-const STATE_STYLE: Record<CmuxTaskState, { label: string; icon: string; color: string; level: string; progress: number }> = {
-  running: { label: "working", icon: "sparkle", color: "#FF8A4C", level: "progress", progress: 0.15 },
-  needs_attention: { label: "needs attention", icon: "exclamationmark.triangle", color: "#E7B84B", level: "warning", progress: 0.85 },
-  blocked: { label: "blocked", icon: "exclamationmark.octagon", color: "#E85D5D", level: "error", progress: 0.85 },
-  completed: { label: "done", icon: "checkmark.circle", color: "#4CAF7A", level: "success", progress: 1 },
-  failed: { label: "failed", icon: "xmark.circle", color: "#E85D5D", level: "error", progress: 1 },
-};
 
 function record(value: unknown): Record<string, unknown> | undefined {
-  return value !== null && typeof value === "object" ? value as Record<string, unknown> : undefined;
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function text(value: unknown): string | undefined {
@@ -82,55 +69,38 @@ function pruneAttentionEpisodes(map: Map<string, AttentionEpisode>, ttlMs: numbe
   }
 }
 
-export function sanitizeCmuxText(value: unknown, limit: number): string {
-  if (typeof value !== "string") return "";
-  const clean = value
-    .replace(/[\u0000-\u001F\u007F]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (clean.length <= limit) return clean;
-  return `${clean.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
+export function cmuxTitle(event: WorkflowLifecycleEvent): string {
+  const metadata = workflowLifecycleMetadata(event);
+  return `${metadata.title} · ${metadata.status}`;
 }
 
-export function taskTitle(value: unknown): string {
-  return sanitizeCmuxText(value, TITLE_TASK_LIMIT) || "Pi task";
-}
-
-export function cmuxTitle(task: string, state: CmuxTaskState): string {
-  return `${taskTitle(task)} · ${STATE_STYLE[state].label}`;
-}
-
-function cmuxDescription(update: CmuxTaskUpdate): string {
-  const detail = sanitizeCmuxText(update.detail, DETAIL_LIMIT);
-  const prefix = `Pi ${STATE_STYLE[update.state].label}: ${taskTitle(update.task)}`;
-  return detail ? `${prefix} — ${detail}` : prefix;
-}
-
-function cmuxNotification(update: CmuxTaskUpdate, environment: CmuxEnvironment): readonly string[] | undefined {
-  if (!update.notify || !environment.surfaceId) return undefined;
-  const style = STATE_STYLE[update.state];
+function cmuxNotification(event: WorkflowLifecycleEvent, environment: CmuxEnvironment): readonly string[] | undefined {
+  if (!environment.workspaceId || !environment.surfaceId) return undefined;
+  const metadata = workflowLifecycleMetadata(event);
   return [
     "notify",
-    "--title", `Pi ${style.label}`,
-    "--subtitle", taskTitle(update.task),
-    "--body", sanitizeCmuxText(update.detail, DETAIL_LIMIT) || style.label,
-    "--workspace", environment.workspaceId!,
+    "--title", metadata.title,
+    "--subtitle", metadata.status,
+    "--body", metadata.description,
+    "--workspace", environment.workspaceId,
     "--surface", environment.surfaceId,
   ];
 }
 
-function transitionCommands(update: CmuxTaskUpdate, environment: CmuxEnvironment): readonly (readonly string[])[] {
+function transitionCommands(
+  event: WorkflowLifecycleEvent,
+  environment: CmuxEnvironment,
+  notify: boolean,
+): readonly (readonly string[])[] {
   if (!environment.workspaceId) return [];
-  const style = STATE_STYLE[update.state];
-  const progress = update.progress ?? { value: style.progress, label: `Pi · ${style.label}` };
-  const value = Math.min(1, Math.max(0, Number.isFinite(progress.value) ? progress.value : style.progress));
+  const metadata = workflowLifecycleMetadata(event);
   const commands: Array<readonly string[]> = [];
   if (environment.surfaceId) {
     commands.push([
       "rename-tab",
       "--workspace", environment.workspaceId,
       "--surface", environment.surfaceId,
-      "--title", cmuxTitle(update.task, update.state),
+      "--title", cmuxTitle(event),
     ]);
   }
   commands.push(
@@ -138,39 +108,35 @@ function transitionCommands(update: CmuxTaskUpdate, environment: CmuxEnvironment
       "workspace-action",
       "--workspace", environment.workspaceId,
       "--action", "set-description",
-      "--description", cmuxDescription(update),
+      "--description", metadata.description,
     ],
     [
-      "set-status", STATUS_KEY, style.label,
-      "--icon", style.icon,
-      "--color", style.color,
+      "set-status", STATUS_KEY, metadata.status,
+      "--icon", metadata.icon,
+      "--color", metadata.color,
       "--workspace", environment.workspaceId,
     ],
     [
-      "set-progress", value.toFixed(2),
-      "--label", sanitizeCmuxText(progress.label, 64) || `Pi · ${style.label}`,
+      "set-progress", metadata.progress.toFixed(2),
+      "--label", metadata.progressLabel,
       "--workspace", environment.workspaceId,
     ],
     [
       "log",
-      "--level", style.level,
+      "--level", metadata.level,
       "--source", "pi",
       "--workspace", environment.workspaceId,
-      "--", sanitizeCmuxText(update.detail, DETAIL_LIMIT) || cmuxDescription(update),
+      "--", metadata.description,
     ],
   );
-  const notification = cmuxNotification(update, environment);
+  const notification = notify ? cmuxNotification(event, environment) : undefined;
   if (notification) commands.push(notification);
   return commands;
 }
 
-function activityCommands(label: string, environment: CmuxEnvironment): readonly (readonly string[])[] {
+function activityCommands(environment: CmuxEnvironment): readonly (readonly string[])[] {
   if (!environment.workspaceId) return [];
-  return [[
-    "set-progress", "0.55",
-    "--label", sanitizeCmuxText(label, 64) || "Pi · working",
-    "--workspace", environment.workspaceId,
-  ]];
+  return [["set-progress", "0.55", "--label", "Pi · working", "--workspace", environment.workspaceId]];
 }
 
 function cleanupCommands(environment: CmuxEnvironment): readonly (readonly string[])[] {
@@ -209,10 +175,7 @@ export function createCmuxCommandRunner(
     let finished = false;
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
-    const child = spawn(executable, [...args], {
-      env: childEnvironment,
-      stdio: "ignore",
-    });
+    const child = spawn(executable, [...args], { env: childEnvironment, stdio: "ignore" });
     child.unref();
     const finish = (success: boolean): void => {
       if (finished) return;
@@ -254,12 +217,12 @@ export class CmuxTaskBridge {
       .catch(() => undefined);
   }
 
-  transition(update: CmuxTaskUpdate): void {
-    this.enqueue(transitionCommands({ ...update, task: taskTitle(update.task) }, this.environment));
+  transition(event: WorkflowLifecycleEvent, notify = false): void {
+    this.enqueue(transitionCommands(event, this.environment, notify));
   }
 
-  activity(label: string): void {
-    this.enqueue(activityCommands(label, this.environment));
+  activity(): void {
+    this.enqueue(activityCommands(this.environment));
   }
 
   clear(): void {
@@ -271,12 +234,8 @@ export class CmuxTaskBridge {
   }
 }
 
-function eventTask(payload: Record<string, unknown> | undefined, fallback: string): string {
-  return taskTitle(text(payload?.label) ?? text(payload?.summary) ?? text(payload?.name) ?? fallback);
-}
-
-function setTerminalTitle(ctx: ExtensionContext | undefined, task: string, state: CmuxTaskState): void {
-  if (ctx?.hasUI) ctx.ui.setTitle(cmuxTitle(task, state));
+function setTerminalTitle(ctx: ExtensionContext | undefined, event: WorkflowLifecycleEvent): void {
+  if (ctx?.hasUI) ctx.ui.setTitle(cmuxTitle(event));
 }
 
 export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions = {}): CmuxTaskBridge {
@@ -286,32 +245,32 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
     surfaceId: text(environment.CMUX_SURFACE_ID) ?? text(environment.CMUX_TAB_ID),
   };
   const bridge = new CmuxTaskBridge(cmuxEnvironment, options.runner ?? createCmuxCommandRunner(environment));
-  let currentTask = "Pi task";
+  let currentEvent = createWorkflowLifecycleEvent("session", "running");
   const terminalRuns = new Map<string, number>();
   const backgroundTasks = new Map<string, number>();
   const attentionEpisodes = new Map<string, AttentionEpisode>();
   const supervisorRequests = new Map<string, number>();
 
-  pi.on("before_agent_start", (event, ctx) => {
-    currentTask = taskTitle(event.prompt);
-    setTerminalTitle(ctx, currentTask, "running");
-    bridge.transition({ task: currentTask, state: "running", detail: "Pi started working" });
+  pi.on("before_agent_start", (_event, ctx) => {
+    currentEvent = createWorkflowLifecycleEvent("session", "running");
+    setTerminalTitle(ctx, currentEvent);
+    bridge.transition(currentEvent);
   });
 
-  pi.on("tool_execution_start", (event) => {
-    bridge.activity(`Pi · ${sanitizeCmuxText(event.toolName, 40) || "working"}`);
+  pi.on("tool_execution_start", () => {
+    bridge.activity();
   });
 
   pi.on("agent_end", () => {
-    bridge.activity("Pi · finishing");
+    bridge.activity();
   });
 
   pi.on("agent_settled", (_event, ctx) => {
     if (!ctx.isIdle()) return;
-    setTerminalTitle(ctx, currentTask, "completed");
-    // cmux-session.ts owns the parent completion notification; this companion only
-    // updates cmux metadata so the user receives one completion notification.
-    bridge.transition({ task: currentTask, state: "completed", detail: "Pi is ready for input" });
+    currentEvent = createWorkflowLifecycleEvent("session", "completed");
+    setTerminalTitle(ctx, currentEvent);
+    // cmux-session.ts owns ordinary parent completion notifications.
+    bridge.transition(currentEvent);
   });
 
   pi.on("session_shutdown", () => {
@@ -327,18 +286,16 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
     const childKey = `${runId}:${integer(payload?.index) ?? ""}`;
     if (type === "active_long_running") {
       attentionEpisodes.delete(childKey);
-      bridge.activity("Pi · long-running work");
+      bridge.activity();
       return;
     }
     if (type !== "needs_attention") return;
     pruneAttentionEpisodes(attentionEpisodes, 5 * 60 * 1000);
     const previous = attentionEpisodes.get(childKey);
     if (previous && Date.now() - previous.at <= 5 * 60 * 1000) return;
-    const controlReason = text(payload?.reason);
-    attentionEpisodes.set(childKey, { at: Date.now(), source: "control", reason: controlReason });
-    const reason = text(payload?.message) ?? text(payload?.recentFailureSummary) ?? text(envelope?.noticeText) ?? "A delegated workflow needs attention";
-    const task = eventTask(payload, currentTask);
-    bridge.transition({ task, state: "needs_attention", detail: reason, notify: true });
+    const reason = text(payload?.reason);
+    attentionEpisodes.set(childKey, { at: Date.now(), source: "control", reason });
+    bridge.transition(createWorkflowLifecycleEvent("delegation", "needs_attention"), true);
   });
 
   pi.events.on("pi-intercom:detach-request", (value: unknown) => {
@@ -349,16 +306,9 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
     const childKey = `${runId}:${integer(payload?.childIndex) ?? ""}`;
     pruneAttentionEpisodes(attentionEpisodes, 5 * 60 * 1000);
     const previous = attentionEpisodes.get(childKey);
-    attentionEpisodes.set(childKey, { at: Date.now(), source: "detach", requestId });
-    // A control event and detach request are two views of one supervisor ask.
-    // Distinct request IDs from the same child remain independently actionable.
+    attentionEpisodes.set(childKey, { at: Date.now(), source: "detach" });
     if (previous?.source === "control" && previous.reason === "supervisor_request" && Date.now() - previous.at <= 5_000) return;
-    bridge.transition({
-      task: eventTask(payload, currentTask),
-      state: "blocked",
-      detail: "A delegated workflow is waiting for a supervisor response",
-      notify: true,
-    });
+    bridge.transition(createWorkflowLifecycleEvent("delegation", "blocked"), true);
   });
 
   pi.events.on("subagent:async-complete", (value: unknown) => {
@@ -370,15 +320,7 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
       if (key.startsWith(`${runId}:`)) attentionEpisodes.delete(key);
     }
     const success = payload?.success === true || ["complete", "completed"].includes(text(payload?.state) ?? "");
-    const task = eventTask(payload, currentTask);
-    bridge.transition({
-      task,
-      state: success ? "completed" : "failed",
-      detail: text(payload?.summary) ?? (success ? "Asynchronous workflow completed" : "Asynchronous workflow did not complete successfully"),
-      // Successful async work produces one parent follow-up notification. Failures
-      // are actionable and notify immediately.
-      notify: !success,
-    });
+    bridge.transition(createWorkflowLifecycleEvent("delegation", success ? "completed" : "failed"), !success);
   });
 
   pi.events.on("pi-background-tasks:terminal:v1", (value: unknown) => {
@@ -387,33 +329,16 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
     const taskPayload = record(payload?.task);
     const id = text(taskPayload?.id);
     if (!id || !rememberBounded(backgroundTasks, id, 60 * 60 * 1000)) return;
-    const status = text(taskPayload?.status) ?? "failed";
-    const success = status === "completed";
-    bridge.transition({
-      task: eventTask(taskPayload, currentTask),
-      state: success ? "completed" : "failed",
-      detail: text(taskPayload?.error) ?? `Background task ${status}`,
-      notify: !success,
-    });
+    const success = text(taskPayload?.status) === "completed";
+    bridge.transition(createWorkflowLifecycleEvent("background", success ? "completed" : "failed"), !success);
   });
 
-  pi.events.on("pi-workbench:task-state:v1", (value: unknown) => {
-    const payload = record(value);
-    if (payload?.schemaVersion !== 1) return;
-    const state = text(payload?.state) as CmuxTaskState | undefined;
-    if (!state || !(state in STATE_STYLE)) return;
-    const task = taskTitle(text(payload?.title) ?? currentTask);
-    currentTask = task;
-    const progressPayload = record(payload?.progress);
-    const progressValue = typeof progressPayload?.value === "number" ? progressPayload.value : undefined;
-    const progressLabel = text(progressPayload?.label);
-    bridge.transition({
-      task,
-      state,
-      detail: text(payload?.detail),
-      progress: progressValue === undefined ? undefined : { value: progressValue, label: progressLabel ?? `Pi · ${STATE_STYLE[state].label}` },
-      notify: state === "blocked" || state === "needs_attention" || state === "failed" || (state === "completed" && payload?.terminal === true),
-    });
+  pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (value: unknown) => {
+    const event = decodeWorkflowLifecycleEvent(value);
+    if (!event) return;
+    currentEvent = event;
+    const notify = ["needs_attention", "blocked", "completed", "failed", "cancelled", "interrupted"].includes(event.state);
+    bridge.transition(event, notify);
   });
 
   return bridge;

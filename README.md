@@ -112,13 +112,13 @@ Inspect a backup before copying its `resources/` or `config/` files back into th
 
 ## Live agent UI
 
-During a Workbench run, the footer shows the Supervisor and delegated agents as compact, collapsible phase cards. Use `Ctrl+Down` to focus the cards, arrows to navigate, and `Enter` to open an agent overlay. The overlay streams output and tool calls and accepts queued steering messages. `P` pauses/resumes, `C` cancels, `Shift+C` cancels all, `R` restarts eligible jobs, `F` shows files/tests, `Y` copies output, and `Escape` returns to Pi. Finished agents remain readable under `Finished (N)` until the next Workbench run.
+During a Workbench run, the footer shows the Supervisor and delegated agents as compact, collapsible phase cards. Use `Ctrl+Alt+Down` to focus the cards, `Ctrl+Alt+Up` to return to the editor, arrows to navigate, and `Enter` to open an agent overlay. The overlay streams output and tool calls and accepts queued steering messages. `P` pauses/resumes, selected-child `C` cancels only that child, and `Shift+C` first aborts the confirmed `/plan`, `/start-work`, or `/autopilot` run and then cancels its active children. `R` restarts eligible jobs, `F` shows files/tests, `Y` copies output, and `Escape` returns to Pi. Finished agents remain readable under `Finished (N)` until the next Workbench run.
 
 ## Commands
 
 | Command | Purpose |
 |---|---|
-| `/delegate` | Show the specialist roster/current plan, or run `/delegate <agent> <task>` |
+| `/delegate` | Show the specialist roster/current plan, or run `/delegate <agent> <task>`; write-capable specialists now require interactive approval before launch |
 | `/model-routing [status\|balanced\|economy\|quality\|fixed <model-or-alias>\|reset]` | Show or change the session-only child-routing policy without writing global model settings |
 | `/plan [task]` | Interview, discover, analyze requirements, plan, and run Quality + Technical review |
 | `/start-work` | Execute the approved plan through the Execution Manager, Implementer, review, fixes, and verification |
@@ -180,7 +180,9 @@ research/runs/<timestamp>-<slug>/
 └── manifest.json
 ```
 
-The extension itself is global at `~/.pi/agent/extensions/pi-workbench/`; intent, settings, workflow history, and research state live inside each project. Protected agent memory is project-keyed but stored under the Pi agent directory.
+The extension itself is global at `~/.pi/agent/extensions/pi-workbench/`; intent, settings, workflow history, and research state live inside each project. Protected agent memory is project-keyed but stored under the Pi agent directory. Workflow `current.json` remains the complete authoritative state: validated saves serialize per project and atomically replace the plan projection before replacing `current.json`; malformed or unsafe authoritative state is reported as corruption rather than treated as absent. Confirmation-gated workflow and council commands compare an ephemeral in-memory authority snapshot immediately before launching work or changing persisted state; a mismatch launches nothing and requires a fresh run and confirmation. There is no automatic recovery, replay, or resume path.
+
+Write-capable workflow entrypoints share `.pi/pi-workbench/writer.lock`, keyed by the canonical resolved project/worktree root. Existing live, stale, ambiguous, or malformed leases all block immediately and are never automatically removed or taken over. Independent worktree roots remain independent. Operator intervention must verify the owner before removing an abandoned lease.
 
 ## QMD
 
@@ -266,7 +268,7 @@ The opinionated `./install.sh --full` profile also makes Main Pi default to `ope
 
 ### cmux task surfaces
 
-The installer links a repository-owned `cmux-workbench.ts` companion beside cmux's generated `cmux-session.ts`; it never edits or duplicates the generated hook/feed bridge. Inside cmux, Pi keeps the active tab title in `task · state` form and updates workspace description, one namespaced status pill, phase progress, and sparse transition logs through stable cmux CLI commands. Explicit workspace/surface IDs prevent focus-dependent routing, command arguments are spawned without a shell, updates serialize, text is bounded, and missing cmux state fails soft.
+The installer links a repository-owned `cmux-workbench.ts` companion beside cmux's generated `cmux-session.ts`; it never edits or duplicates the generated hook/feed bridge. Inside cmux, Pi uses a versioned metadata-only lifecycle contract with fixed categorical phase titles, states, progress, descriptions, and error codes. Prompts, tasks, outputs, summaries, raw errors, details, labels, and tool names are not accepted by that contract or forwarded into cmux commands. Explicit workspace/surface IDs prevent focus-dependent routing, command arguments are spawned without a shell, updates serialize, deduplication is bounded, and missing cmux state fails soft.
 
 The generated cmux extension remains the single owner of ordinary parent completion notifications. The companion adds deduplicated notifications only for explicit subagent needs-attention/supervisor requests, failed asynchronous/background work, and terminal Workbench command outcomes. Routine child completion, process-terminal telemetry, and `SubagentStop` feed events never notify.
 

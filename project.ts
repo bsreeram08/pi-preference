@@ -1,9 +1,23 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Exec, ProjectPaths, QmdResult, CouncilSession } from "./types.ts";
 
 const STATE_DIR_NAME = "pi-workbench";
+
+export interface CouncilAuthoritySnapshot {
+  readonly sessionContent?: string;
+  readonly intentContent?: string;
+  readonly session?: CouncilSession;
+  readonly intent: string;
+}
+
+export class CouncilAuthoritySnapshotMismatchError extends Error {
+  constructor() {
+    super("Authoritative council state changed after confirmation; rerun the command and reconfirm.");
+    this.name = "CouncilAuthoritySnapshotMismatchError";
+  }
+}
 
 function projectId(root: string): string {
   return createHash("sha1").update(root).digest("hex").slice(0, 10);
@@ -32,17 +46,62 @@ export function getProjectPaths(root: string): ProjectPaths {
   };
 }
 
-export async function ensureProjectState(paths: ProjectPaths): Promise<void> {
-  await fs.mkdir(paths.stateDir, { recursive: true });
-  try {
-    await fs.access(paths.decisions);
-  } catch {
-    await fs.writeFile(
-      paths.decisions,
-      "# Sreeram's Pi Workbench Decisions\n\nDecisions are appended here. Each entry records what the user chose and why.\n",
-      "utf8",
-    );
+async function ensureContainedDirectory(root: string, canonicalRoot: string, directory: string): Promise<void> {
+  const relative = path.relative(root, directory);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Project state path escapes the project root.");
+  let current = root;
+  for (const component of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, component);
+    let stat = await fs.lstat(current).catch((error) => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
+    if (!stat) {
+      await fs.mkdir(current, { mode: 0o700 });
+      stat = await fs.lstat(current);
+    }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Unsafe project state directory: ${current}`);
+    const expectedReal = path.join(canonicalRoot, path.relative(root, current));
+    if (await fs.realpath(current) !== expectedReal) throw new Error(`Unsafe project state directory: ${current}`);
   }
+}
+
+async function ensureDecisionFile(pathname: string): Promise<void> {
+  const existing = await fs.lstat(pathname).catch((error) => (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : Promise.reject(error));
+  if (existing) {
+    if (existing.isSymbolicLink() || !existing.isFile()) throw new Error(`Unsafe project decision file: ${pathname}`);
+    return;
+  }
+  const temporary = path.join(path.dirname(pathname), `.${path.basename(pathname)}.${randomUUID()}.tmp`);
+  try {
+    const handle = await fs.open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile("# Sreeram's Pi Workbench Decisions\n\nDecisions are appended here. Each entry records what the user chose and why.\n", "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    try {
+      await fs.link(temporary, pathname);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const raced = await fs.lstat(pathname);
+      if (raced.isSymbolicLink() || !raced.isFile()) throw new Error(`Unsafe project decision file: ${pathname}`);
+    }
+  } finally {
+    await fs.unlink(temporary).catch(() => undefined);
+  }
+}
+
+export async function ensureProjectState(paths: ProjectPaths): Promise<void> {
+  const root = path.resolve(paths.root);
+  const expectedStateDir = path.join(root, ".pi", STATE_DIR_NAME);
+  if (path.resolve(paths.stateDir) !== expectedStateDir || path.resolve(paths.decisions) !== path.join(expectedStateDir, "decisions.md")) {
+    throw new Error("Invalid project state paths.");
+  }
+  const rootStat = await fs.lstat(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new Error("Unsafe project root.");
+  const canonicalRoot = await fs.realpath(root);
+  await ensureContainedDirectory(root, canonicalRoot, path.join(root, ".pi"));
+  await ensureContainedDirectory(root, canonicalRoot, expectedStateDir);
+  await ensureDecisionFile(paths.decisions);
 }
 
 export async function readOptional(filePath: string): Promise<string> {
@@ -56,6 +115,42 @@ export async function readOptional(filePath: string): Promise<string> {
 export async function writeText(filePath: string, content: string): Promise<void> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content.trimEnd() + "\n", "utf8");
+}
+
+async function readAuthorityFile(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+export async function captureCouncilAuthority(paths: ProjectPaths): Promise<CouncilAuthoritySnapshot> {
+  const [sessionContent, intentContent] = await Promise.all([
+    readAuthorityFile(paths.session),
+    readAuthorityFile(paths.intent),
+  ]);
+  let session: CouncilSession | undefined;
+  if (sessionContent !== undefined) {
+    try {
+      session = JSON.parse(sessionContent) as CouncilSession;
+    } catch {
+      session = undefined;
+    }
+  }
+  return { sessionContent, intentContent, session, intent: intentContent ?? "" };
+}
+
+export async function assertCouncilAuthorityUnchanged(
+  paths: ProjectPaths,
+  expected: CouncilAuthoritySnapshot,
+): Promise<CouncilAuthoritySnapshot> {
+  const current = await captureCouncilAuthority(paths);
+  if (current.sessionContent !== expected.sessionContent || current.intentContent !== expected.intentContent) {
+    throw new CouncilAuthoritySnapshotMismatchError();
+  }
+  return current;
 }
 
 export async function loadSession(paths: ProjectPaths): Promise<CouncilSession | undefined> {

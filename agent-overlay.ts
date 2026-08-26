@@ -3,6 +3,7 @@ import { Input, Key, matchesKey, truncateToWidth, visibleWidth, type Component, 
 import { AgentDashboardState, isFinishedStatus, type AgentDashboardJob } from "./dashboard-state.ts";
 
 export interface AgentOverlayActions {
+  cancelRun(): void;
   copy(job: AgentDashboardJob): void;
   requestRender(): void;
 }
@@ -110,9 +111,7 @@ export class AgentDetailOverlay implements Component, Focusable {
       return;
     }
     if (matchesKey(data, "shift+c")) {
-      for (const active of this.dashboard.getActiveGroups().flatMap((group) => group.jobs)) {
-        this.dashboard.control(active.id)?.cancel();
-      }
+      this.actions.cancelRun();
       return;
     }
     if (matchesKey(data, "r")) {

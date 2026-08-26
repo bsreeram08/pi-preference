@@ -16,6 +16,7 @@ export interface AgentResult {
   title: string;
   output: string;
   exitCode: number;
+  cancelled?: boolean;
   error?: string;
   routing?: {
     effort: "light" | "standard" | "heavy";

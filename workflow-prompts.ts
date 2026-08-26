@@ -340,26 +340,40 @@ Return:
 ## Completion Claim`;
 }
 
-export function executionManagerReportsBlocker(output: string): boolean {
-  const match = output.match(/## Blockers\s*\n([\s\S]*?)(?=\n## |$)/i);
-  if (!match) return false;
-  const section = match[1].trim().replace(/^[-*]\s*/, "").replace(/[.!]+$/, "").trim();
-  if (!section) return false;
-  return !/^(?:none|no blockers|no blocking issues|not blocked)$/i.test(section);
+export type ExecutionBlockerVerdict = "clear" | "blocked" | "invalid";
+
+export function parseExecutionBlockerVerdict(output: string): ExecutionBlockerVerdict {
+  const headings = [...output.matchAll(/^##[ \t]+Blockers[ \t]*$/gim)];
+  if (headings.length !== 1) return "invalid";
+  const heading = headings[0];
+  const start = (heading.index ?? 0) + heading[0].length;
+  const rest = output.slice(start).replace(/^\r?\n/, "");
+  const nextHeading = rest.search(/^##[ \t]+\S.*$/m);
+  const rawSection = (nextHeading < 0 ? rest : rest.slice(0, nextHeading)).trim();
+  if (!rawSection) return "invalid";
+  const normalized = rawSection
+    .replace(/^[-*][ \t]+/, "")
+    .replace(/[.!]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  return ["none", "no blockers", "no blocking issues", "not blocked"].includes(normalized) ? "clear" : "blocked";
 }
 
 export function parsePlanningClearance(output: string): PlanningClearance | undefined {
-  const match = output.match(/<clearance>\s*([\s\S]*?)\s*<\/clearance>/i);
-  if (!match) return undefined;
+  const matches = [...output.matchAll(/<clearance>\s*([\s\S]*?)\s*<\/clearance>/gi)];
+  if (matches.length !== 1) return undefined;
   try {
-    const value = JSON.parse(match[1]) as Partial<PlanningClearance>;
+    const value = JSON.parse(matches[0][1]) as Partial<PlanningClearance> & Record<string, unknown>;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    if (Object.keys(value).some((key) => !["ready", "questions", "assumptions"].includes(key))) return undefined;
     if (typeof value.ready !== "boolean") return undefined;
-    if (!Array.isArray(value.questions) || value.questions.some((item) => typeof item !== "string")) return undefined;
-    if (!Array.isArray(value.assumptions) || value.assumptions.some((item) => typeof item !== "string")) return undefined;
+    if (!Array.isArray(value.questions) || value.questions.some((item) => typeof item !== "string" || !item.trim())) return undefined;
+    if (!Array.isArray(value.assumptions) || value.assumptions.some((item) => typeof item !== "string" || !item.trim())) return undefined;
     return {
       ready: value.ready,
-      questions: value.questions.map((item) => item.trim()).filter(Boolean),
-      assumptions: value.assumptions.map((item) => item.trim()).filter(Boolean),
+      questions: value.questions.map((item) => item.trim()),
+      assumptions: value.assumptions.map((item) => item.trim()),
     };
   } catch {
     return undefined;
@@ -378,11 +392,11 @@ export function parseCodeVerdict(output: string): CodeVerdict {
 }
 
 export function planReviewsPass(results: AgentResult[]): boolean {
-  return results.length >= 2 && results.every((result) => result.exitCode === 0 && parsePlanVerdict(result.output) === "OKAY");
+  return results.length >= 2 && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parsePlanVerdict(result.output) === "OKAY");
 }
 
 export function codeReviewsPass(results: AgentResult[]): boolean {
-  return results.length >= 2 && results.every((result) => result.exitCode === 0 && parseCodeVerdict(result.output) === "PASS");
+  return results.length >= 2 && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parseCodeVerdict(result.output) === "PASS");
 }
 
 export function verificationPasses(output: string): boolean {
