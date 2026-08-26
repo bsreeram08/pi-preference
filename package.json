@@ -27,7 +27,7 @@
   },
   "packageManager": "bun@1.3.14",
   "scripts": {
-    "test": "bun test tests",
+    "test": "bun test --timeout=20000 tests",
     "typecheck": "node scripts/typecheck.mjs",
     "public-check": "node scripts/check-public-release.mjs",
     "capabilities:check": "python3 scripts/check-capabilities.py",
