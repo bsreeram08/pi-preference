@@ -7,14 +7,49 @@ import {
   cmuxTitle,
   createCmuxCommandRunner,
   registerCmuxWorkbench,
-} from "../setup/cmux-workbench.ts";
+} from "../cmux-workbench.ts";
 import {
   createWorkflowLifecycleEvent,
   decodeWorkflowLifecycleEvent,
   WORKFLOW_LIFECYCLE_EVENT,
 } from "../workflow-lifecycle.ts";
 
+const ROOT = path.resolve(import.meta.dir, "..");
+
 describe("cmux workbench bridge", () => {
+  test.skipIf(process.platform === "win32")("loads from a fresh installer symlink layout", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "cmux-workbench-load-"));
+    const agentDir = path.join(directory, "agent");
+    const extensionsDir = path.join(agentDir, "extensions");
+    await fs.mkdir(extensionsDir, { recursive: true });
+    await fs.symlink(ROOT, path.join(extensionsDir, "pi-workbench"), "dir");
+    await fs.symlink(
+      path.join(ROOT, "setup", "cmux-workbench.ts"),
+      path.join(extensionsDir, "cmux-workbench.ts"),
+      "file",
+    );
+
+    try {
+      const child = Bun.spawn(["pi"], {
+        env: { ...process.env, PI_CODING_AGENT_DIR: agentDir, TERM: "xterm" },
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      child.stdin.end();
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      const output = `${stdout}\n${stderr}`;
+      expect(output).not.toContain("Failed to load extension");
+      expect(exitCode).toBe(0);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  }, 10_000);
+
   test("accepts only the versioned categorical lifecycle contract", () => {
     const event = createWorkflowLifecycleEvent("execution", "running");
     expect(decodeWorkflowLifecycleEvent(event)).toEqual(event);

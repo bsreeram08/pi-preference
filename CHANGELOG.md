@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fixed Git-installed startup by registering the cmux bridge from the main Workbench directory extension while retaining a dependency-free compatibility entry for existing installer and updater manifests.
 - Moved Workbench card focus shortcuts to `Ctrl+Alt+Down` / `Ctrl+Alt+Up` to avoid Pi 0.84.3 fullscreen transcript shortcut conflicts.
 - Added the explicit `/workbench-update [status|apply]` updater with stable-release/one-time-main-bootstrap channel policy, strict bounded no-follow 0600 audit state, isolated Git configuration, immutable-SHA fast-forward, strict root/submodule metadata and retained startup-link preflight, confirmation-time candidate revalidation, update-aware leasing, exact deterministic live-versus-simulated config verification, an explicit `UPDATED` result, and success-only terminal Pi reload with restart guidance on reload rejection.
 - Replaced destructive updater rollback with a verified same-filesystem checkout snapshot transaction and no-replace directory swap; failed candidate checkouts and replaced deterministic config values are retained at private manifest-recorded recovery locations, while concurrent tracked, untracked, managed-config, and ignored credential/runtime changes remain recoverable and force `ROLLBACK_INCOMPLETE`.

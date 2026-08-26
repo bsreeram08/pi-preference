@@ -42,10 +42,10 @@ The conclusions below come from an implementation-level review pinned to that co
 
 1. **Metadata-only lifecycle contract**
    - `workflow.ts` emits `pi-workbench:workflow-lifecycle:v1`, constructed and decoded by `workflow-lifecycle.ts` from allowlisted phase, state, and categorical error code only.
-   - `setup/cmux-workbench.ts` maps that contract plus explicit `pi-subagents` and background-task terminal events to fixed titles, descriptions, progress, logs, statuses, and sparse notifications. It does not derive metadata from prompts or forward free-form event fields.
+   - `cmux-workbench.ts`, registered by the main directory extension, maps that contract plus explicit `pi-subagents` and background-task terminal events to fixed titles, descriptions, progress, logs, statuses, and sparse notifications. It does not derive metadata from prompts or forward free-form event fields.
 
 2. **Separate observability adapter**
-   - The repository-owned cmux companion updates title, description, status, progress, and sparse logs.
+   - The repository-owned cmux bridge updates title, description, status, progress, and sparse logs.
    - It does not edit or duplicate cmux’s generated `cmux-session.ts` feed bridge.
 
 3. **Lifecycle and safety compatibility tests**

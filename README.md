@@ -52,7 +52,7 @@ cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 The safe default installer:
 
 - validates the submodule and Pi RPC imports before changing the installation;
-- links Workbench, the cmux companion, the framed editor extension, and the Ember theme file;
+- links Workbench, the cmux compatibility entry, the framed editor extension, and the Ember theme file;
 - preserves the current active theme, settings, preferences, and skill-evolution configuration;
 - backs up replaced resources and rolls links back if installation fails;
 - runs Bun tests and strict TypeScript checks when those tools are available.
@@ -266,9 +266,9 @@ The opinionated `./install.sh --full` profile also makes Main Pi default to `ope
 
 ### cmux task surfaces
 
-The installer links a repository-owned `cmux-workbench.ts` companion beside cmux's generated `cmux-session.ts`; it never edits or duplicates the generated hook/feed bridge. Inside cmux, Pi uses a versioned metadata-only lifecycle contract with fixed categorical phase titles, states, progress, descriptions, and error codes. Prompts, tasks, outputs, summaries, raw errors, details, labels, and tool names are not accepted by that contract or forwarded into cmux commands. Explicit workspace/surface IDs prevent focus-dependent routing, command arguments are spawned without a shell, updates serialize, deduplication is bounded, and missing cmux state fails soft.
+The main Workbench directory extension registers the repository-owned cmux bridge; it never edits or duplicates cmux's generated `cmux-session.ts` hook/feed bridge. The installer retains a dependency-free `cmux-workbench.ts` compatibility entry so existing Git installations and updater versions continue to validate the historical managed link without registering the bridge twice. Inside cmux, Pi uses a versioned metadata-only lifecycle contract with fixed categorical phase titles, states, progress, descriptions, and error codes. Prompts, tasks, outputs, summaries, raw errors, details, labels, and tool names are not accepted by that contract or forwarded into cmux commands. Explicit workspace/surface IDs prevent focus-dependent routing, command arguments are spawned without a shell, updates serialize, deduplication is bounded, and missing cmux state fails soft.
 
-The generated cmux extension remains the single owner of ordinary parent completion notifications. The companion adds deduplicated notifications only for explicit subagent needs-attention/supervisor requests, failed asynchronous/background work, and terminal Workbench command outcomes. Routine child completion, process-terminal telemetry, and `SubagentStop` feed events never notify.
+The generated cmux extension remains the single owner of ordinary parent completion notifications. The Workbench bridge adds deduplicated notifications only for explicit subagent needs-attention/supervisor requests, failed asynchronous/background work, and terminal Workbench command outcomes. Routine child completion, process-terminal telemetry, and `SubagentStop` feed events never notify.
 
 Routing also adds three contextual concept packs:
 
