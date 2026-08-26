@@ -256,6 +256,15 @@ async function createFixture(profile: UpdateProfile = "default"): Promise<Fixtur
   return fixture;
 }
 
+async function embedSubmoduleMetadata(fixture: Fixture): Promise<string> {
+  const checkout = path.join(fixture.root, "reprompter");
+  const metadata = path.join(fixture.root, ".git", "modules", "reprompter");
+  git(checkout, "config", "--unset-all", "core.worktree");
+  await fs.unlink(path.join(checkout, ".git"));
+  await fs.rename(metadata, path.join(checkout, ".git"));
+  return path.join(checkout, ".git");
+}
+
 async function apply(updater: WorkbenchUpdater, confirm = true): Promise<WorkbenchApplyResult> {
   return updater.apply({
     confirm: async () => confirm,
@@ -513,6 +522,31 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     expect(fixture.calls.some((item) => item.command === "git")).toBe(false);
   });
 
+  test("allows ordinary historical branch tracking config but rejects unsafe branch config", async () => {
+    const safe = await createFixture();
+    git(safe.root, "config", "branch.feat/example.remote", "origin");
+    git(safe.root, "config", "branch.feat/example.merge", "refs/heads/feat/example");
+    expect(await safe.updater(fakeReleases([release("v1.1.0")])).status()).toMatchObject({
+      category: "update-available",
+      code: "READY",
+    });
+
+    for (const [key, value] of [
+      ["branch.feat/example.remote", "attacker"],
+      ["branch.feat/example.merge", "!touch /tmp/hostile"],
+      ["branch.feat/.hidden.remote", "origin"],
+      ["branch.feat/example.merge", "refs/heads/feat/.hidden"],
+      ["branch.feat/example.rebase", "true"],
+    ] as const) {
+      const unsafe = await createFixture();
+      git(unsafe.root, "config", key, value);
+      expect(await unsafe.updater(fakeReleases([])).status()).toMatchObject({
+        category: "blocked",
+        code: "INSTALL_UNSUPPORTED",
+      });
+    }
+  });
+
   test("rejects replace refs, grafts, info attributes, and unsafe execution or transport config", async () => {
     for (const setup of [
       async (fixture: Fixture) => {
@@ -622,6 +656,19 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     });
   });
 
+  test("accepts contained legacy submodule metadata", async () => {
+    const fixture = await createFixture();
+    const embeddedMetadata = await embedSubmoduleMetadata(fixture);
+
+    expect(await fixture.updater(fakeReleases([release("v1.1.0")])).status()).toMatchObject({
+      category: "update-available",
+      code: "READY",
+    });
+
+    git(fixture.root, "config", "--file", path.join(embeddedMetadata, "config"), "core.worktree", "");
+    expect(await fixture.updater(fakeReleases([])).status()).toMatchObject({ category: "blocked" });
+  });
+
   test("rejects nested submodules and external submodule metadata", async () => {
     const nested = await createFixture();
     await fs.writeFile(path.join(nested.root, "reprompter", ".gitmodules"), '[submodule "nested"]\n\tpath = nested\n\turl = https://github.com/attacker/nested.git\n');
@@ -706,6 +753,24 @@ describe("Pi Workbench updater apply transaction", () => {
       expect(git(fixture.root, "rev-parse", "HEAD")).toBe(fixture.candidate);
     }
   }, 15_000);
+
+  test("preserves contained legacy submodule metadata through success and rollback", async () => {
+    for (const failure of [false, true]) {
+      const fixture = await createFixture();
+      await embedSubmoduleMetadata(fixture);
+      if (failure) fixture.controls.installerExit = 1;
+
+      const result = await apply(fixture.updater(fakeReleases([release("v1.1.0")])));
+      expect(result).toMatchObject(failure
+        ? { category: "blocked", code: "ROLLED_BACK", reload: false }
+        : { category: "updated", code: "UPDATED", reload: true });
+      expect(git(fixture.root, "rev-parse", "HEAD")).toBe(failure ? fixture.initial : fixture.candidate);
+      const embedded = await fs.lstat(path.join(fixture.root, "reprompter", ".git"));
+      expect(embedded.isDirectory()).toBe(true);
+      expect(embedded.isSymbolicLink()).toBe(false);
+      expect(await fs.lstat(path.join(fixture.root, ".git", "modules", "reprompter")).catch(() => undefined)).toBeUndefined();
+    }
+  }, 30_000);
 
   test("keeps a concurrently changed old snapshot without rolling back a successful update", async () => {
     const fixture = await createFixture();

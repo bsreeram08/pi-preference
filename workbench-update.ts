@@ -376,6 +376,36 @@ const SAFE_SUBMODULE_CONFIG_KEYS = new Set([
   "branch.main.merge",
 ]);
 
+interface LocalConfigEntry {
+  readonly key: string;
+  readonly value: string;
+}
+
+function parseLocalConfig(output: string): LocalConfigEntry[] {
+  return output.split("\0").filter(Boolean).map((record) => {
+    const separator = record.indexOf("\n");
+    if (separator <= 0) throw new UpdateFailure("INSTALL_UNSUPPORTED");
+    return { key: record.slice(0, separator).toLowerCase(), value: record.slice(separator + 1) };
+  });
+}
+
+function safeBranchName(value: string): boolean {
+  return /^[a-z0-9][a-z0-9._/-]*$/i.test(value)
+    && !value.includes("..")
+    && !value.includes("//")
+    && !value.includes("@{")
+    && !value.endsWith(".")
+    && !value.endsWith("/")
+    && !value.split("/").some((part) => !part || part.startsWith(".") || part.endsWith(".lock"));
+}
+
+function safeHistoricalBranchConfig(entry: LocalConfigEntry): boolean {
+  const match = /^branch\.(.+)\.(remote|merge)$/.exec(entry.key);
+  if (!match || !safeBranchName(match[1])) return false;
+  if (match[2] === "remote") return entry.value === "origin";
+  return entry.value.startsWith("refs/heads/") && safeBranchName(entry.value.slice("refs/heads/".length));
+}
+
 function sameCheckout(left: CheckoutSnapshot, right: CheckoutSnapshot): boolean {
   return left.head === right.head
     && left.rootStatus === right.rootStatus
@@ -638,9 +668,13 @@ export class WorkbenchUpdater {
     }
     const replacements = await this.gitAt(root, ["for-each-ref", "--format=%(refname)", "refs/replace"]);
     if (replacements.stdout !== "") throw new UpdateFailure("INSTALL_UNSUPPORTED");
-    const config = await this.gitAt(root, ["config", "--local", "--name-only", "--null", "--list"]);
-    const keys = config.stdout.split("\0").filter(Boolean).map((key) => key.toLowerCase());
-    if (keys.some((key) => !SAFE_LOCAL_CONFIG_KEYS.has(key))) throw new UpdateFailure("INSTALL_UNSUPPORTED");
+    const config = await this.gitAt(root, ["config", "--local", "--null", "--list"]);
+    const entries = parseLocalConfig(config.stdout);
+    if (entries.some((entry) => entry.key.startsWith("branch.")
+      ? !safeHistoricalBranchConfig(entry)
+      : !SAFE_LOCAL_CONFIG_KEYS.has(entry.key))) {
+      throw new UpdateFailure("INSTALL_UNSUPPORTED");
+    }
     const submoduleUrls = (await this.gitAt(root, ["config", "--local", "--get-all", "submodule.reprompter.url"], [0, 1])).stdout
       .replace(/\r/g, "").split("\n").filter(Boolean);
     if (submoduleUrls.length > 1 || (submoduleUrls.length === 1 && submoduleUrls[0] !== TRUSTED_REPROMPTER)) {
@@ -659,6 +693,7 @@ export class WorkbenchUpdater {
       throw new UpdateFailure("SUBMODULE_DIRTY");
     }
     const expectedMetadata = path.join(root, ".git", "modules", "reprompter");
+    const embeddedMetadata = path.join(checkout, ".git");
     let metadataResult: ExecResult;
     try {
       metadataResult = await this.gitAt(checkout, ["rev-parse", "--absolute-git-dir"]);
@@ -666,23 +701,27 @@ export class WorkbenchUpdater {
       throw new UpdateFailure("SUBMODULE_DIRTY");
     }
     const metadataValue = trimOneLine(metadataResult.stdout);
-    const metadataStat = await fs.lstat(expectedMetadata).catch(() => undefined);
-    if (!metadataValue
-      || path.resolve(metadataValue) !== expectedMetadata
+    const resolvedMetadata = metadataValue ? path.resolve(metadataValue) : "";
+    const absorbed = resolvedMetadata === expectedMetadata;
+    const embedded = resolvedMetadata === embeddedMetadata;
+    const metadataStat = await fs.lstat(resolvedMetadata).catch(() => undefined);
+    const expectedMetadataStat = await fs.lstat(expectedMetadata).catch((error) => isMissing(error) ? undefined : Promise.reject(error));
+    if ((!absorbed && !embedded)
       || !metadataStat?.isDirectory()
       || metadataStat.isSymbolicLink()
-      || await fs.realpath(expectedMetadata) !== expectedMetadata) {
+      || await fs.realpath(resolvedMetadata) !== resolvedMetadata
+      || (embedded && expectedMetadataStat !== undefined)) {
       throw new UpdateFailure("SUBMODULE_DIRTY");
     }
     if (await fs.lstat(path.join(checkout, ".gitmodules")).then(() => true, (error) => isMissing(error) ? false : Promise.reject(error))) {
       throw new UpdateFailure("SUBMODULE_DIRTY");
     }
-    for (const pathname of [path.join(expectedMetadata, "info", "grafts"), path.join(expectedMetadata, "info", "attributes")]) {
+    for (const pathname of [path.join(resolvedMetadata, "info", "grafts"), path.join(resolvedMetadata, "info", "attributes")]) {
       if (await fs.lstat(pathname).then(() => true, (error) => isMissing(error) ? false : Promise.reject(error))) {
         throw new UpdateFailure("INSTALL_UNSUPPORTED");
       }
     }
-    const excludePath = path.join(expectedMetadata, "info", "exclude");
+    const excludePath = path.join(resolvedMetadata, "info", "exclude");
     const exclude = await fs.readFile(excludePath, "utf8").catch((error) => isMissing(error) ? "" : Promise.reject(error));
     if (exclude.split(/\r?\n/).some((line) => line.trim() && !line.trimStart().startsWith("#"))) {
       throw new UpdateFailure("INSTALL_UNSUPPORTED");
@@ -697,7 +736,9 @@ export class WorkbenchUpdater {
     if (origins.length !== 1 || origins[0] !== TRUSTED_REPROMPTER) throw new UpdateFailure("INSTALL_UNSUPPORTED");
     const worktrees = (await this.gitAt(checkout, ["config", "--local", "--get-all", "core.worktree"], [0, 1])).stdout
       .replace(/\r/g, "").split("\n").filter(Boolean);
-    if (worktrees.length !== 1 || path.resolve(expectedMetadata, worktrees[0]) !== checkout) {
+    const hasWorktreeKey = keys.includes("core.worktree");
+    if ((absorbed && (!hasWorktreeKey || worktrees.length !== 1 || path.resolve(resolvedMetadata, worktrees[0]) !== checkout))
+      || (embedded && (hasWorktreeKey || worktrees.length !== 0))) {
       throw new UpdateFailure("INSTALL_UNSUPPORTED");
     }
     return checkout;
