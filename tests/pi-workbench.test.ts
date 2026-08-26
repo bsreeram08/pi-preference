@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { resolveSupervisorAgents, selectSpecialists } from "../agents.ts";
+import piWorkbench from "../index.ts";
 import {
   getWorkflowAgentProfile,
   resolveWorkflowAgent,
@@ -12,7 +13,7 @@ import {
 import { routeConcepts } from "../workflow-concepts.ts";
 import {
   codeReviewsPass,
-  executionManagerReportsBlocker,
+  parseExecutionBlockerVerdict,
   parseCodeVerdict,
   parsePlanningClearance,
   parsePlanVerdict,
@@ -27,6 +28,8 @@ import {
   type WorkflowPlanState,
 } from "../workflow-state.ts";
 import { AgentDashboardState } from "../dashboard-state.ts";
+import { WorkbenchDashboardController } from "../dashboard-controller.ts";
+import { AgentDetailOverlay } from "../agent-overlay.ts";
 import { canDelegateSpecialists, parseSupervisorDecision } from "../supervisor.ts";
 import { DEFAULT_CONFIG, normalizeConfig } from "../config.ts";
 import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
@@ -45,6 +48,9 @@ import {
 import { extractHtmlDocument, parseYahooSearchResults } from "../research-tools.ts";
 import {
   appendDecision,
+  assertCouncilAuthorityUnchanged,
+  captureCouncilAuthority,
+  CouncilAuthoritySnapshotMismatchError,
   ensureProjectState,
   formatQmdResults,
   getProjectPaths,
@@ -112,6 +118,60 @@ describe("agent dashboard state", () => {
 
     expect(dashboard.currentRunId).toBe("run-2");
     expect(dashboard.getGroups()).toHaveLength(0);
+  });
+
+  test("keeps selected-child cancellation local and aborts the run before cancel-all children", () => {
+    const controller = new WorkbenchDashboardController({} as any);
+    let input: ((data: string) => unknown) | undefined;
+    controller.attach({
+      mode: "tui",
+      ui: {
+        onTerminalInput(handler: (data: string) => unknown) { input = handler; return () => undefined; },
+        setFooter() {},
+      },
+    } as any);
+    const runController = new AbortController();
+    const events: string[] = [];
+    runController.signal.addEventListener("abort", () => events.push("run"));
+    controller.beginRun("run-1", runController);
+    controller.addJob("one", "One", "phase", "Phase");
+    controller.setControl("one", {
+      steer() {}, pause() {}, resume() {}, restart() {}, cancel() { events.push("child"); },
+    });
+    controller.focusCards();
+
+    input?.("c");
+    expect(runController.signal.aborted).toBe(false);
+    expect(events).toEqual(["child"]);
+    events.length = 0;
+    input?.("C");
+    expect(runController.signal.aborted).toBe(true);
+    expect(events).toEqual(["run", "child"]);
+    controller.dispose();
+  });
+
+  test("routes overlay cancel-all through the run controller before child cancellation", () => {
+    const controller = new WorkbenchDashboardController({} as any);
+    const runController = new AbortController();
+    const events: string[] = [];
+    runController.signal.addEventListener("abort", () => events.push("run"));
+    controller.beginRun("overlay-run", runController);
+    controller.addJob("overlay-job", "Overlay Job", "phase", "Phase");
+    controller.setControl("overlay-job", {
+      steer() {}, pause() {}, resume() {}, restart() {}, cancel() { events.push("child"); },
+    });
+    const overlay = new AgentDetailOverlay(
+      { showOverlay: () => ({ hide() {} }) } as any,
+      {} as any,
+      controller.state,
+      "overlay-job",
+      { cancelRun: () => controller.cancelRun(), copy() {}, requestRender() {} },
+      () => undefined,
+    );
+
+    overlay.handleInput("C");
+    expect(events).toEqual(["run", "child"]);
+    controller.dispose();
   });
 });
 
@@ -183,8 +243,11 @@ describe("Pi workflow routing", () => {
     expect(parseCodeVerdict("<code-verdict>BLOCKED</code-verdict>")).toBe("BLOCKED");
     expect(verificationPasses("done <verified/>")).toBe(true);
     expect(verificationPasses("<verified/> but also <failed/>")).toBe(false);
-    expect(executionManagerReportsBlocker("## Blockers\n- None.\n")).toBe(false);
-    expect(executionManagerReportsBlocker("## Blockers\n- Missing migration rollback.\n")).toBe(true);
+    expect(parseExecutionBlockerVerdict("## Blockers\n- None.\n")).toBe("clear");
+    expect(parseExecutionBlockerVerdict("## Blockers\n- Missing migration rollback.\n")).toBe("blocked");
+    expect(parseExecutionBlockerVerdict("No section")).toBe("invalid");
+    expect(parseExecutionBlockerVerdict("## Blockers\n\n## Next\nText")).toBe("invalid");
+    expect(parseExecutionBlockerVerdict("## Blockers\nNone\n## Blockers\nNone")).toBe("invalid");
   });
 
   test("requires two independent passing reviewers and serializes writers", () => {
@@ -271,7 +334,68 @@ describe("project settings", () => {
   });
 });
 
+interface CouncilCommandHarness {
+  readonly commands: Map<string, (args: string, ctx: any) => Promise<void>>;
+  readonly reports: Array<{ title: string; body: string }>;
+}
+
+function councilCommandHarness(root: string): CouncilCommandHarness {
+  const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+  const reports: Array<{ title: string; body: string }> = [];
+  const pi = {
+    registerCommand(name: string, command: any) { commands.set(name, command.handler); },
+    registerEntryRenderer() {},
+    registerShortcut() {},
+    registerTool() {},
+    on() {},
+    appendEntry(_type: string, data: { title?: string; body?: string }) {
+      if (data.title && data.body) reports.push({ title: data.title, body: data.body });
+    },
+    events: { on() {}, emit() {} },
+    exec: async (_command: string, args: string[]) => {
+      if (args.includes("--show-toplevel")) return { stdout: `${root}\n`, stderr: "", code: 0 };
+      if (args.includes("--porcelain")) return { stdout: "", stderr: "", code: 0 };
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  } as any;
+  piWorkbench(pi);
+  return { commands, reports };
+}
+
 describe("durable project state", () => {
+  test("rejects a symlinked .pi directory without creating external state", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-state-link-"));
+    const external = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-state-external-"));
+    try {
+      await fs.symlink(external, path.join(root, ".pi"), "dir");
+      await expect(ensureProjectState(getProjectPaths(root))).rejects.toThrow("Unsafe project state directory");
+      expect(await fs.readdir(external)).toEqual([]);
+    } finally {
+      await Promise.all([
+        fs.rm(root, { recursive: true, force: true }),
+        fs.rm(external, { recursive: true, force: true }),
+      ]);
+    }
+  });
+
+  test("does not follow a symlinked decision destination", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-decision-link-"));
+    const external = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-decision-external-")), "outside.md");
+    try {
+      const paths = getProjectPaths(root);
+      await fs.mkdir(paths.stateDir, { recursive: true });
+      await fs.writeFile(external, "outside\n");
+      await fs.symlink(external, paths.decisions);
+      await expect(ensureProjectState(paths)).rejects.toThrow("Unsafe project decision file");
+      expect(await fs.readFile(external, "utf8")).toBe("outside\n");
+    } finally {
+      await Promise.all([
+        fs.rm(root, { recursive: true, force: true }),
+        fs.rm(path.dirname(external), { recursive: true, force: true }),
+      ]);
+    }
+  });
+
   test("creates decision storage and round-trips a session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-test-"));
     try {
@@ -291,6 +415,139 @@ describe("durable project state", () => {
       await saveSession(paths, session);
       expect(await loadSession(paths)).toEqual(session);
       expect(await fs.readFile(paths.decisions, "utf8")).toContain("Use SQLite because it is local-first");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects changed council authority without mutating the replacement session or intent", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-authority-test-"));
+    const paths = getProjectPaths(root);
+    try {
+      await ensureProjectState(paths);
+      const original: CouncilSession = {
+        version: 1,
+        projectRoot: root,
+        topic: "Original approved intent",
+        phase: "intent-approved",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        agents: ["product"],
+        rounds: [],
+      };
+      await saveSession(paths, original);
+      await fs.writeFile(paths.intent, "> Status: Approved\n\nOriginal.\n", "utf8");
+      const snapshot = await captureCouncilAuthority(paths);
+
+      const replacement = { ...original, topic: "Replacement authority", updatedAt: "2026-01-02T00:00:00.000Z" };
+      await saveSession(paths, replacement);
+      await fs.writeFile(paths.intent, "> Status: Approved\n\nReplacement.\n", "utf8");
+      const sessionBeforeGuard = await fs.readFile(paths.session, "utf8");
+      const intentBeforeGuard = await fs.readFile(paths.intent, "utf8");
+
+      await expect(assertCouncilAuthorityUnchanged(paths, snapshot)).rejects.toBeInstanceOf(CouncilAuthoritySnapshotMismatchError);
+      expect(await fs.readFile(paths.session, "utf8")).toBe(sessionBeforeGuard);
+      expect(await fs.readFile(paths.intent, "utf8")).toBe(intentBeforeGuard);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("council implementation mismatch launches neither workers nor a new session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-council-command-"));
+    const paths = getProjectPaths(root);
+    const original: CouncilSession = {
+      version: 1,
+      projectRoot: root,
+      topic: "Confirmed authority",
+      phase: "intent-approved",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      agents: ["product"],
+      rounds: [],
+    };
+    try {
+      await ensureProjectState(paths);
+      await saveSession(paths, original);
+      await fs.writeFile(paths.intent, "> Status: Approved\n\nConfirmed.\n", "utf8");
+      const sameHarness = councilCommandHarness(root);
+      let newSessions = 0;
+      const replacement = { ...original, topic: "Replacement authority", updatedAt: "2026-01-02T00:00:00.000Z" };
+      const ctx = {
+        cwd: root,
+        hasUI: true,
+        ui: {
+          confirm: async () => {
+            await saveSession(paths, replacement);
+            await fs.writeFile(paths.intent, "> Status: Approved\n\nReplacement.\n", "utf8");
+            return true;
+          },
+          setStatus() {},
+        },
+        newSession: async () => { newSessions++; },
+      } as any;
+      await sameHarness.commands.get("council-implement")?.("same", ctx);
+      expect((await loadSession(paths))?.topic).toBe("Replacement authority");
+      expect(await fs.readFile(paths.intent, "utf8")).toContain("Replacement.");
+      expect(await fs.readdir(paths.stateDir)).not.toContain("ImplementationPlan.md");
+      expect(newSessions).toBe(0);
+      expect(sameHarness.reports.at(-1)?.body).toContain("rerun");
+      expect(sameHarness.reports.at(-1)?.body).toContain("reconfirm");
+
+      await saveSession(paths, original);
+      await fs.writeFile(paths.intent, "> Status: Approved\n\nConfirmed.\n", "utf8");
+      const newHarness = councilCommandHarness(root);
+      const newCtx = {
+        ...ctx,
+        ui: {
+          select: async () => {
+            await saveSession(paths, replacement);
+            return "New session (recommended)";
+          },
+          setStatus() {},
+        },
+      } as any;
+      await newHarness.commands.get("council-implement")?.("", newCtx);
+      expect(newSessions).toBe(0);
+      expect((await loadSession(paths))?.topic).toBe("Replacement authority");
+      expect(newHarness.reports.at(-1)?.body).toContain("rerun");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("force-complete mismatch preserves the replacement council session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-force-command-"));
+    const paths = getProjectPaths(root);
+    const original: CouncilSession = {
+      version: 1,
+      projectRoot: root,
+      topic: "Confirmed authority",
+      phase: "implementing",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      agents: ["product"],
+      rounds: [],
+    };
+    try {
+      await ensureProjectState(paths);
+      await saveSession(paths, original);
+      await fs.writeFile(paths.intent, "> Status: Approved\n\nConfirmed.\n", "utf8");
+      const commandHarness = councilCommandHarness(root);
+      const replacement = { ...original, topic: "Replacement authority", updatedAt: "2026-01-02T00:00:00.000Z" };
+      await commandHarness.commands.get("council-force-complete")?.("accept risk", {
+        cwd: root,
+        hasUI: true,
+        ui: {
+          confirm: async () => { await saveSession(paths, replacement); return true; },
+          setStatus() {},
+        },
+      } as any);
+
+      expect(await loadSession(paths)).toEqual(replacement);
+      expect(await fs.readFile(paths.decisions, "utf8")).not.toContain("User forced completion");
+      expect(commandHarness.reports.at(-1)?.body).toContain("rerun");
+      expect(commandHarness.reports.at(-1)?.body).toContain("reconfirm");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

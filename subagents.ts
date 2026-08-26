@@ -168,6 +168,23 @@ async function runPiAgent(
     do {
       restartRequested = false;
       cancelled = false;
+      if (signal?.aborted) {
+        cancelled = true;
+        finalResult = {
+          agentId: agent.id,
+          title: agent.title,
+          output: "",
+          exitCode: 1,
+          cancelled: true,
+          error: "Agent cancelled before launch.",
+        };
+        runContext?.dashboard?.finishJob(jobId, "cancelled", {
+          error: finalResult.error,
+          exitCode: finalResult.exitCode,
+          latestActivity: "cancelled",
+        });
+        break;
+      }
       const invocation = getPiInvocation(args);
       const attempt = await new Promise<AgentResult>((resolve) => {
         const child = spawn(invocation.command, [...invocation.args], {
@@ -205,18 +222,28 @@ async function runPiAgent(
         let settled = false;
         let exitCode = 0;
         const queuedMessages: string[] = [];
+        const abort = () => control.cancel();
         const finish = (code: number, error?: string) => {
           if (settled) return;
           settled = true;
+          signal?.removeEventListener("abort", abort);
           const effectiveCode = error && code === 0 ? 1 : code;
           const status = cancelled ? "cancelled" : effectiveCode === 0 ? "completed" : "failed";
+          const output = truncate(latestAssistant || currentAssistant || stderr);
           runContext?.dashboard?.finishJob(jobId, status, {
-            output: truncate(latestAssistant || currentAssistant || error || stderr),
+            output: output || error,
             error: error || (effectiveCode === 0 ? undefined : stderr || `Agent exited with code ${effectiveCode}`),
             exitCode: effectiveCode,
             latestActivity: status,
           });
-          resolve({ agentId: agent.id, title: agent.title, output: truncate(latestAssistant || currentAssistant || stderr || "(agent produced no text output)"), exitCode: effectiveCode, error: error || (effectiveCode === 0 ? undefined : stderr) });
+          resolve({
+            agentId: agent.id,
+            title: agent.title,
+            output,
+            exitCode: effectiveCode,
+            ...(cancelled ? { cancelled: true } : {}),
+            ...(error || (effectiveCode !== 0 && stderr) ? { error: error || stderr } : {}),
+          });
         };
         const processLine = (line: string) => {
           if (!line.trim()) return;
@@ -297,10 +324,9 @@ async function runPiAgent(
           finish(exitCode, budgetFailure);
         });
         activeSend = (message: string) => sendRpc(child, { type: "steer", message });
-        sendRpc(child, { type: "prompt", id: `initial-${jobId}`, message: `Task: ${task}` });
-        const abort = () => control.cancel();
+        signal?.addEventListener("abort", abort, { once: true });
         if (signal?.aborted) abort();
-        else signal?.addEventListener("abort", abort, { once: true });
+        if (!cancelled) sendRpc(child, { type: "prompt", id: `initial-${jobId}`, message: `Task: ${task}` });
       });
       finalResult = attempt;
       if (restartRequested) {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Moved Workbench card focus shortcuts to `Ctrl+Alt+Down` / `Ctrl+Alt+Up` to avoid Pi 0.84.3 fullscreen transcript shortcut conflicts.
+- Hardened mandatory workflow phases to reject cancelled, nonzero, blank, failed-batch, malformed-clearance, and invalid execution-blocker results before downstream consumption.
+- Added run-owned cancellation for confirmed planning/execution/autopilot commands, corruption-visible atomic full-state persistence, and explicit `cancelled` versus `interrupted` terminal states without replay or resume.
+- Replaced free-form cmux workflow telemetry with a versioned categorical metadata-only lifecycle contract and removed prompt, task, detail, summary, raw-error, label, and tool-name forwarding.
+- Added a fail-closed project/worktree-scoped writer lease across `/start-work`, `/autopilot`, write-capable delegation, and both council implementation session paths.
+- Compatibility change: single write-capable `/delegate` and `delegate_task` launches now require interactive user approval; headless write delegation is rejected. Read-only delegation remains non-interactive.
+- Revalidate ephemeral authoritative workflow/council snapshots after confirmation for `/plan`, `/start-work`, `/autopilot`, `/council-implement`, and `/council-force-complete`; mismatches preserve the newer persisted state, launch no child, and require rerun/reconfirmation.
 - Changed the opinionated global profile to OpenAI Codex GPT-5.6 Sol/high for Main Pi, with task-based child routing across Luna/low, Terra/medium, and Sol/high.
 - Added a repository-owned cmux companion that keeps task-and-state titles, sidebar status, phase progress, descriptions, and sparse logs current while preserving low-noise overall completion and needs-attention notifications.
 - Added task-driven adaptive model routing with balanced, economy, quality, and session-only fixed child policies restored from custom session entries without changing the active parent model.

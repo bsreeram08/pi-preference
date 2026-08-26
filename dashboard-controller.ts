@@ -12,6 +12,7 @@ export class WorkbenchDashboardController {
   private overlayOpen = false;
   private overlayPromise?: Promise<void>;
   private footerTimer?: ReturnType<typeof setTimeout>;
+  private runController?: AbortController;
 
   constructor(private readonly pi: ExtensionAPI) {}
 
@@ -26,8 +27,9 @@ export class WorkbenchDashboardController {
     this.unsubscribeInput = ctx.ui.onTerminalInput((data) => this.handleInput(data));
   }
 
-  beginRun(runId: string): void {
+  beginRun(runId: string, runController?: AbortController): void {
     this.state.beginRun(runId);
+    this.runController = runController;
   }
 
   focusCards(): void {
@@ -39,7 +41,15 @@ export class WorkbenchDashboardController {
   }
 
   endRun(): void {
+    this.runController = undefined;
     this.state.endRun();
+  }
+
+  cancelRun(): void {
+    this.runController?.abort();
+    for (const job of this.state.getActiveGroups().flatMap((group) => group.jobs)) {
+      this.state.control(job.id)?.cancel();
+    }
   }
 
   ensureGroup(id: string, title: string): void {
@@ -75,7 +85,8 @@ export class WorkbenchDashboardController {
     if (this.footerTimer) clearTimeout(this.footerTimer);
     this.footerTimer = undefined;
     this.overlayOpen = false;
-    for (const job of this.state.getActiveGroups().flatMap((group) => group.jobs)) this.state.control(job.id)?.cancel();
+    this.cancelRun();
+    this.runController = undefined;
     this.ctx?.ui.setFooter(undefined);
     this.ctx = undefined;
     this.state.clear();
@@ -141,7 +152,7 @@ export class WorkbenchDashboardController {
       return { consume: true };
     }
     if (matchesKey(data, "shift+c")) {
-      for (const job of this.state.getActiveGroups().flatMap((group) => group.jobs)) this.state.control(job.id)?.cancel();
+      this.cancelRun();
       return { consume: true };
     }
     if (matchesKey(data, "r")) {
@@ -162,6 +173,7 @@ export class WorkbenchDashboardController {
     this.overlayPromise = ctx.ui.custom<void>(
       (tui, theme, _keybindings, done) =>
         new AgentDetailOverlay(tui, theme, this.state, jobId, {
+          cancelRun: () => this.cancelRun(),
           copy: (job) => void this.copyJob(job),
           requestRender: () => tui.requestRender(),
         }, done),

@@ -23,6 +23,9 @@ import {
 import {
   appendDecision,
   archiveCurrentState,
+  assertCouncilAuthorityUnchanged,
+  captureCouncilAuthority,
+  CouncilAuthoritySnapshotMismatchError,
   ensureProjectState,
   ensureQmdCollections,
   findProjectRoot,
@@ -37,6 +40,8 @@ import {
   writeText,
 } from "./project.ts";
 import { runAgentsParallel, runSingleAgent } from "./subagents.ts";
+import { assertMandatoryAgentBatch, assertMandatoryAgentResult } from "./agent-result-guard.ts";
+import { acquireExclusiveLease } from "./exclusive-lease.ts";
 import { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { registerWorkbenchResearch } from "./research.ts";
 import { registerWorkflow } from "./workflow.ts";
@@ -263,11 +268,11 @@ export default function piWorkbench(pi: ExtensionAPI) {
     dashboard.dispose();
   });
 
-  pi.registerShortcut("ctrl+down", {
+  pi.registerShortcut("ctrl+alt+down", {
     description: "Focus Sreeram's Pi Workbench agent cards",
     handler: () => dashboard.focusCards(),
   });
-  pi.registerShortcut("ctrl+up", {
+  pi.registerShortcut("ctrl+alt+up", {
     description: "Return focus to the Pi editor",
     handler: () => dashboard.unfocusCards(),
   });
@@ -363,6 +368,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
             progress.update,
             { dashboard, groupId: `round-${round}`, groupTitle: `Round ${round}` },
           );
+          assertMandatoryAgentBatch(results, `council round ${round}`);
           const roundText = formatAgentResults(results);
           transcript += `\n\n# Round ${round}\n\n${roundText}`;
           if (!session) throw new Error("Council session was not initialized");
@@ -417,6 +423,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
           progress.update,
           { dashboard, groupId: "lead-synthesis", groupTitle: "Lead synthesis", jobId: "lead-synthesis" },
         );
+        assertMandatoryAgentResult(leadResult, "council synthesis");
         const sections = parseLeadSections(leadResult.output);
         const edited = await ctx.ui.editor("Review and edit Intent.md", withIntentStatus(sections.intent, "Draft"));
         if (edited === undefined) {
@@ -463,9 +470,10 @@ export default function piWorkbench(pi: ExtensionAPI) {
       }
       const root = await findProjectRoot(ctx.cwd, exec);
       const paths = getProjectPaths(root);
-      const session = await loadSession(paths);
+      const authority = await captureCouncilAuthority(paths);
+      const session = authority.session;
       const config = await loadConfig(paths);
-      const intent = await readOptional(paths.intent);
+      const intent = authority.intent;
       if (!session || session.phase === "clarifying" || !/^> Status: Approved$/m.test(intent)) {
         report(pi, "Intent not approved", "Run `/council <idea>` and approve Intent.md before implementation.");
         return;
@@ -489,6 +497,13 @@ export default function piWorkbench(pi: ExtensionAPI) {
         mode = choice.startsWith("New") ? "new" : "same";
       }
       if (mode === "new") {
+        try {
+          await assertCouncilAuthorityUnchanged(paths, authority);
+        } catch (error) {
+          if (!(error instanceof CouncilAuthoritySnapshotMismatchError)) throw error;
+          report(pi, "Council state changed", error.message);
+          return;
+        }
         await ctx.newSession({
           parentSession: ctx.sessionManager.getSessionFile(),
           withSession: async (fresh) => {
@@ -511,6 +526,21 @@ export default function piWorkbench(pi: ExtensionAPI) {
       );
       if (!confirmed) return;
 
+      let writerLease: Awaited<ReturnType<typeof acquireExclusiveLease>>;
+      try {
+        writerLease = await acquireExclusiveLease(root, "council-implement");
+      } catch (error) {
+        report(pi, "Council writer unavailable", error instanceof Error ? error.message : String(error));
+        return;
+      }
+      try {
+        await assertCouncilAuthorityUnchanged(paths, authority);
+      } catch (error) {
+        await writerLease.release();
+        if (!(error instanceof CouncilAuthoritySnapshotMismatchError)) throw error;
+        report(pi, "Council state changed", error.message);
+        return;
+      }
       dashboard.beginRun(`implementation-${Date.now()}`);
       const supervisor = new SupervisorClient(root, dashboard, pi);
       const progress = makeProgress(ctx, "Sreeram's Pi Workbench — implementation");
@@ -549,6 +579,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
           progress.update,
           { dashboard, groupId: "implementation-planning", groupTitle: "Implementation planning" },
         );
+        assertMandatoryAgentBatch(planningResults, "council implementation planning");
         const plan = formatAgentResults(planningResults);
         await writeText(paths.implementationPlan, `# Implementation Plan\n\n${plan}`);
         report(pi, "Parallel implementation briefs", plan);
@@ -585,6 +616,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
             );
           }),
         );
+        assertMandatoryAgentBatch(workerResults, "council implementation candidates");
         const workerReports = formatAgentResults(workerResults);
         const manifests = (
           await Promise.all(workspaceGroup.workers.map((worker) => describeWorkspaceChanges(worker, exec)))
@@ -608,6 +640,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
           progress.update,
           { dashboard, groupId: "integration", groupTitle: "Integration", jobId: "integration-implementer" },
         );
+        assertMandatoryAgentResult(implementation, "council integration");
         report(pi, "Integrated implementation", implementation.output);
 
         await cleanupWorkerWorkspaces(root, workspaceGroup, exec);
@@ -649,6 +682,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
             progress.update,
             { dashboard, groupId: `review-${attempt + 1}`, groupTitle: `Review cycle ${attempt + 1}` },
           );
+          assertMandatoryAgentBatch(reviews, `council review cycle ${attempt + 1}`);
           const reviewText = formatAgentResults(reviews);
           report(pi, `Parallel code review — cycle ${attempt + 1}`, reviewText);
 
@@ -662,6 +696,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
             progress.update,
             { dashboard, groupId: `verification-${attempt + 1}`, groupTitle: `Verification cycle ${attempt + 1}`, jobId: `verifier-${attempt + 1}` },
           );
+          assertMandatoryAgentResult(verification, `council verification cycle ${attempt + 1}`);
           finalVerification = verification.output;
           report(pi, `Independent verification — cycle ${attempt + 1}`, verification.output);
 
@@ -704,6 +739,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
             progress.update,
             { dashboard, groupId: `fix-${attempt + 1}`, groupTitle: `Fix cycle ${attempt + 1}`, jobId: `fixer-${attempt + 1}` },
           );
+          assertMandatoryAgentResult(implementation, `council fix cycle ${attempt + 1}`);
           report(pi, `Fix cycle ${attempt + 1}`, implementation.output);
         }
 
@@ -740,6 +776,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
       } finally {
         if (workspaceGroup) await cleanupWorkerWorkspaces(root, workspaceGroup, exec);
         await supervisor.dispose();
+        await writerLease.release();
         progress.clear();
         dashboard.endRun();
       }
@@ -752,7 +789,8 @@ export default function piWorkbench(pi: ExtensionAPI) {
       if (!ctx.hasUI) return;
       const root = await findProjectRoot(ctx.cwd, exec);
       const paths = getProjectPaths(root);
-      const session = await loadSession(paths);
+      const authority = await captureCouncilAuthority(paths);
+      const session = authority.session;
       if (!session) {
         report(pi, "No council", "Run `/council` first.");
         return;
@@ -770,6 +808,13 @@ export default function piWorkbench(pi: ExtensionAPI) {
         "This will be permanently recorded as a user override. It does not make failing tests pass.",
       );
       if (!confirmed) return;
+      try {
+        await assertCouncilAuthorityUnchanged(paths, authority);
+      } catch (error) {
+        if (!(error instanceof CouncilAuthoritySnapshotMismatchError)) throw error;
+        report(pi, "Council state changed", error.message);
+        return;
+      }
       session.phase = "force-completed";
       session.updatedAt = ISO();
       await saveSession(paths, session);
