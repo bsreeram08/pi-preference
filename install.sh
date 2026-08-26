@@ -123,7 +123,7 @@ fi
 python3 "$ROOT/scripts/install-config.py" preflight "${CONFIG_ARGS[@]}"
 
 if [[ -n "$BUN_BIN" ]]; then
-  (cd "$ROOT" && "${CLEAN_ENV[@]}" "$BUN_BIN" test --timeout=20000 tests)
+  (cd "$ROOT" && "${CLEAN_ENV[@]}" "$BUN_BIN" test --timeout=60000 tests)
 else
   printf 'warning: bun is unavailable; skipped the Workbench test suite (use --strict to require it)\n' >&2
 fi

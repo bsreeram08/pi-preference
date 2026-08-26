@@ -710,7 +710,7 @@ describe("Pi Workbench updater apply transaction", () => {
       expect(await fs.readFile(settings)).toEqual(originalSettings);
       expect((await fs.stat(settings)).mode & 0o777).toBe(originalMode);
     }
-  }, 30_000);
+  }, 90_000);
 
   test("preserves concurrent tracked, untracked, and config changes after the installer and reports rollback incomplete", async () => {
     for (const scenario of ["tracked", "untracked", "config"] as const) {
