@@ -43,6 +43,7 @@ import { runAgentsParallel, runSingleAgent } from "./subagents.ts";
 import { assertMandatoryAgentBatch, assertMandatoryAgentResult } from "./agent-result-guard.ts";
 import { acquireExclusiveLease } from "./exclusive-lease.ts";
 import { WorkbenchDashboardController } from "./dashboard-controller.ts";
+import { registerCmuxWorkbench } from "./cmux-workbench.ts";
 import { registerWorkbenchResearch } from "./research.ts";
 import { registerWorkflow } from "./workflow.ts";
 import { registerSkillEvolution } from "./skill-evolution.ts";
@@ -233,6 +234,7 @@ Return:
 }
 
 export default function piWorkbench(pi: ExtensionAPI) {
+  registerCmuxWorkbench(pi);
   const exec: Exec = (command, args, options) => pi.exec(command, args, options);
   const dashboard = new WorkbenchDashboardController(pi);
   const modelRouting = registerModelRouting(pi, (title, body) => report(pi, title, body));
