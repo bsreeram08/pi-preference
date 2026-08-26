@@ -12,6 +12,7 @@ import { runSingleAgent } from "../subagents.ts";
 import {
   acquireExclusiveLease,
   acquireExclusiveLeaseAtPath,
+  acquireUpdateExclusiveLease,
   ExclusiveLeaseError,
   withExclusiveLease,
   type ExclusiveLeaseDependencies,
@@ -51,7 +52,7 @@ function plan(id = "2026-08-25T00-00-00-000Z-safe-plan"): WorkflowPlanState {
 }
 
 async function temporaryRoot(prefix: string): Promise<string> {
-  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
 const UUID_A = "11111111-1111-4111-8111-111111111111";
@@ -61,8 +62,10 @@ function leaseDependencies(
   pid: number,
   token: string,
   inspect: (pid: number) => ProcessInspection,
+  agentDir?: string,
 ): ExclusiveLeaseDependencies {
   return {
+    ...(agentDir ? { agentDir } : {}),
     pid,
     token: () => token,
     hostname: "test-host",
@@ -270,10 +273,11 @@ describe("project-scoped writer lease", () => {
 
     for (const scenario of scenarios) {
       const root = await temporaryRoot(`writer-${scenario.name}-`);
+      const agentDir = path.join(root, "agent");
       try {
-        const first = await acquireExclusiveLease(root, "start-work", leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" })));
+        const first = await acquireExclusiveLease(root, "start-work", leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }), agentDir));
         if (scenario.setup) await scenario.setup(first.path);
-        await expect(acquireExclusiveLease(root, "autopilot", leaseDependencies(202, UUID_B, scenario.inspect))).rejects.toMatchObject({
+        await expect(acquireExclusiveLease(root, "autopilot", leaseDependencies(202, UUID_B, scenario.inspect, agentDir))).rejects.toMatchObject({
           code: scenario.expected,
         });
         expect(await fs.lstat(first.path)).toBeDefined();
@@ -285,9 +289,10 @@ describe("project-scoped writer lease", () => {
 
   test("treats a different-host owner as ambiguous without inspecting its PID", async () => {
     const root = await temporaryRoot("writer-cross-host-");
+    const agentDir = path.join(root, "agent");
     try {
       const first = await acquireExclusiveLease(root, "start-work", {
-        ...leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" })),
+        ...leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }), agentDir),
         hostname: "owner-host",
       });
       const inspected: number[] = [];
@@ -296,7 +301,7 @@ describe("project-scoped writer lease", () => {
           inspected.push(pid);
           if (pid === 101) throw new Error("remote owner PID must not be inspected locally");
           return { kind: "live", startIdentity: "contender-start" };
-        }),
+        }, agentDir),
         hostname: "contender-host",
       })).rejects.toMatchObject({ code: "writer_ambiguous" });
       expect(inspected).toEqual([202]);
@@ -306,9 +311,9 @@ describe("project-scoped writer lease", () => {
     }
   });
 
-  test("releases in finally but never deletes a replacement token", async () => {
+  test("releases in finally but never deletes a replacement project token", async () => {
     const root = await temporaryRoot("writer-release-");
-    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }));
+    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }), path.join(root, "agent"));
     try {
       await expect(withExclusiveLease(root, "start-work", async () => { throw new Error("work failed"); }, dependencies)).rejects.toThrow("work failed");
       await expect(fs.access(path.join(root, ".pi", "pi-workbench", "writer.lock"))).rejects.toThrow();
@@ -323,20 +328,103 @@ describe("project-scoped writer lease", () => {
     }
   });
 
-  test("allows independent resolved worktree roots", async () => {
+  test("allows distinct projects to hold active writer markers concurrently", async () => {
     const firstRoot = await temporaryRoot("writer-root-a-");
     const secondRoot = await temporaryRoot("writer-root-b-");
-    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }));
+    const agentDir = path.join(firstRoot, "agent");
+    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }), agentDir);
     try {
       const first = await acquireExclusiveLease(firstRoot, "start-work", dependencies);
       const second = await acquireExclusiveLease(secondRoot, "start-work", { ...dependencies, token: () => UUID_B });
       expect(first.path).not.toBe(second.path);
+      expect(await fs.readdir(path.join(agentDir, "update", "pi-workbench", "writers"))).toHaveLength(2);
       await Promise.all([first.release(), second.release()]);
     } finally {
       await Promise.all([
         fs.rm(firstRoot, { recursive: true, force: true }),
         fs.rm(secondRoot, { recursive: true, force: true }),
       ]);
+    }
+  });
+
+  test("active workflows block updates and active updates block workflow launch", async () => {
+    const root = await temporaryRoot("writer-update-coordination-");
+    const agentDir = path.join(root, "agent");
+    const inspect = (pid: number): ProcessInspection => ({ kind: "live", startIdentity: pid === 101 ? "owner-start" : "contender-start" });
+    const owner = leaseDependencies(101, UUID_A, inspect, agentDir);
+    const contender = leaseDependencies(202, UUID_B, inspect, agentDir);
+    try {
+      const writer = await acquireExclusiveLease(root, "start-work", owner);
+      await expect(acquireUpdateExclusiveLease(root, contender)).rejects.toMatchObject({ code: "active_writers" });
+      expect(await fs.lstat(path.join(agentDir, "update", "pi-workbench", "update.lock")).catch(() => undefined)).toBeUndefined();
+      await writer.release();
+
+      const updater = await acquireUpdateExclusiveLease(root, owner);
+      let launched = false;
+      await expect(withExclusiveLease(root, "autopilot", async () => { launched = true; }, contender)).rejects.toMatchObject({ code: "update_active" });
+      expect(launched).toBe(false);
+      await updater.release();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("holds the coordination gate across the update check and writer marker creation", async () => {
+    const root = await temporaryRoot("writer-gate-ordering-");
+    const agentDir = path.join(root, "agent");
+    let checked!: () => void;
+    let continueAcquisition!: () => void;
+    const reachedCheck = new Promise<void>((resolve) => { checked = resolve; });
+    const acquisitionMayContinue = new Promise<void>((resolve) => { continueAcquisition = resolve; });
+    const inspect = (pid: number): ProcessInspection => ({ kind: "live", startIdentity: pid === 101 ? "owner-start" : "contender-start" });
+    const owner: ExclusiveLeaseDependencies = {
+      ...leaseDependencies(101, UUID_A, inspect, agentDir),
+      afterCoordinationCheck: async (role) => {
+        if (role !== "writer") return;
+        checked();
+        await acquisitionMayContinue;
+      },
+    };
+    try {
+      const pendingWriter = acquireExclusiveLease(root, "start-work", owner);
+      await reachedCheck;
+      await expect(acquireUpdateExclusiveLease(root, leaseDependencies(202, UUID_B, inspect, agentDir))).rejects.toMatchObject({ code: "writer_live" });
+      continueAcquisition();
+      const writer = await pendingWriter;
+      await writer.release();
+    } finally {
+      continueAcquisition?.();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed on malformed coordination artifacts and releases markers token-safely", async () => {
+    const root = await temporaryRoot("writer-coordination-artifacts-");
+    const agentDir = path.join(root, "agent");
+    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }), agentDir);
+    try {
+      const writer = await acquireExclusiveLease(root, "start-work", dependencies);
+      const writersDirectory = path.join(agentDir, "update", "pi-workbench", "writers");
+      const [markerName] = await fs.readdir(writersDirectory);
+      const markerPath = path.join(writersDirectory, markerName!);
+      const replacement = { ...JSON.parse(await fs.readFile(markerPath, "utf8")), token: UUID_B };
+      await fs.writeFile(markerPath, `${JSON.stringify(replacement)}\n`);
+      await writer.release();
+      expect(JSON.parse(await fs.readFile(markerPath, "utf8")).token).toBe(UUID_B);
+      await fs.unlink(markerPath);
+
+      const updatePath = path.join(agentDir, "update", "pi-workbench", "update.lock");
+      await fs.writeFile(updatePath, "malformed\n", { mode: 0o600 });
+      await expect(acquireExclusiveLease(root, "autopilot", dependencies)).rejects.toMatchObject({ code: "update_active" });
+      await fs.unlink(updatePath);
+
+      const updater = await acquireUpdateExclusiveLease(root, dependencies);
+      const updateReplacement = { ...updater.owner, token: UUID_B };
+      await fs.writeFile(updater.path, `${JSON.stringify(updateReplacement)}\n`);
+      await updater.release();
+      expect(JSON.parse(await fs.readFile(updater.path, "utf8")).token).toBe(UUID_B);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
     }
   });
 

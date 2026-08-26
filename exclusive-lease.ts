@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -35,16 +35,22 @@ export interface ExclusiveLeaseDependencies {
   readonly pid?: number;
   readonly hostname?: string;
   readonly now?: () => Date;
+  readonly agentDir?: string;
+  readonly afterCoordinationCheck?: (role: "writer" | "updater") => Promise<void> | void;
 }
 
 export class ExclusiveLeaseError extends Error {
-  readonly code: "owner_inspection_failed" | "writer_live" | "writer_stale" | "writer_ambiguous" | "writer_malformed";
+  readonly code: "owner_inspection_failed" | "writer_live" | "writer_stale" | "writer_ambiguous" | "writer_malformed" | "update_active" | "active_writers";
   readonly contention?: LeaseContentionKind;
 
   constructor(code: ExclusiveLeaseError["code"], contention?: LeaseContentionKind) {
     super(code === "owner_inspection_failed"
       ? "Could not establish the current writer process identity."
-      : `Project writer lease is unavailable (${contention}).`);
+      : code === "update_active"
+        ? "Project writer lease is unavailable while a Workbench update marker exists."
+        : code === "active_writers"
+          ? "Workbench update is unavailable while project writer markers exist."
+          : `Project writer lease is unavailable (${contention}).`);
     this.name = "ExclusiveLeaseError";
     this.code = code;
     this.contention = contention;
@@ -134,6 +140,32 @@ async function classifyExisting(
   }
 }
 
+async function ensureRealDirectory(directory: string, privateDirectory = false): Promise<void> {
+  let existingAncestor = directory;
+  for (;;) {
+    try {
+      const ancestorStat = await fs.lstat(existingAncestor);
+      if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink() || await fs.realpath(existingAncestor) !== path.resolve(existingAncestor)) {
+        throw new ExclusiveLeaseError("writer_malformed", "malformed");
+      }
+      break;
+    } catch (error) {
+      if (!isEnoent(error)) throw error;
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) throw new ExclusiveLeaseError("writer_malformed", "malformed");
+      existingAncestor = parent;
+    }
+  }
+  await fs.mkdir(directory, { recursive: true, mode: privateDirectory ? 0o700 : 0o755 });
+  const stat = await fs.lstat(directory);
+  if (!stat.isDirectory()
+    || stat.isSymbolicLink()
+    || await fs.realpath(directory) !== path.resolve(directory)
+    || (privateDirectory && (stat.mode & 0o077) !== 0)) {
+    throw new ExclusiveLeaseError("writer_malformed", "malformed");
+  }
+}
+
 async function acquireLeaseAtPath(
   projectRoot: string,
   lockPath: string,
@@ -150,26 +182,7 @@ async function acquireLeaseAtPath(
   if (current.kind !== "live" || !current.startIdentity) throw new ExclusiveLeaseError("owner_inspection_failed");
 
   const lockDirectory = path.dirname(lockPath);
-  let existingAncestor = lockDirectory;
-  for (;;) {
-    try {
-      const ancestorStat = await fs.lstat(existingAncestor);
-      if (!ancestorStat.isDirectory() || ancestorStat.isSymbolicLink() || await fs.realpath(existingAncestor) !== path.resolve(existingAncestor)) {
-        throw new ExclusiveLeaseError("writer_malformed", "malformed");
-      }
-      break;
-    } catch (error) {
-      if (!isEnoent(error)) throw error;
-      const parent = path.dirname(existingAncestor);
-      if (parent === existingAncestor) throw new ExclusiveLeaseError("writer_malformed", "malformed");
-      existingAncestor = parent;
-    }
-  }
-  await fs.mkdir(lockDirectory, { recursive: true });
-  const lockDirectoryStat = await fs.lstat(lockDirectory);
-  if (!lockDirectoryStat.isDirectory() || lockDirectoryStat.isSymbolicLink() || await fs.realpath(lockDirectory) !== path.resolve(lockDirectory)) {
-    throw new ExclusiveLeaseError("writer_malformed", "malformed");
-  }
+  await ensureRealDirectory(lockDirectory);
   const owner: ExclusiveLeaseOwner = {
     version: 1,
     token: dependencies.token?.() ?? randomUUID(),
@@ -211,18 +224,114 @@ async function acquireLeaseAtPath(
   };
 }
 
+interface CoordinationLayout {
+  readonly root: string;
+  readonly gate: string;
+  readonly update: string;
+  readonly writers: string;
+}
+
+async function coordinationLayout(dependencies: ExclusiveLeaseDependencies): Promise<CoordinationLayout> {
+  const agentDir = path.resolve(dependencies.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent"));
+  const root = path.join(agentDir, "update", "pi-workbench");
+  const writers = path.join(root, "writers");
+  await ensureRealDirectory(root);
+  await ensureRealDirectory(writers, true);
+  return {
+    root,
+    gate: path.join(root, "coordination.lock"),
+    update: path.join(root, "update.lock"),
+    writers,
+  };
+}
+
+async function pathExists(pathname: string): Promise<boolean> {
+  try {
+    await fs.lstat(pathname);
+    return true;
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw new ExclusiveLeaseError("writer_malformed", "malformed");
+  }
+}
+
+function writerMarkerPath(writersDirectory: string, canonicalRoot: string): string {
+  return path.join(writersDirectory, `${createHash("sha256").update(canonicalRoot).digest("hex")}.lock`);
+}
+
 export async function acquireExclusiveLease(
   projectRoot: string,
   operation: WriterOperation,
   dependencies: ExclusiveLeaseDependencies = {},
 ): Promise<ExclusiveLease> {
   const canonicalRoot = await fs.realpath(projectRoot);
-  return acquireLeaseAtPath(
+  const projectLease = await acquireLeaseAtPath(
     canonicalRoot,
     path.join(canonicalRoot, ".pi", "pi-workbench", "writer.lock"),
     operation,
     dependencies,
   );
+  let writerMarker: ExclusiveLease | undefined;
+  try {
+    const layout = await coordinationLayout(dependencies);
+    const gate = await acquireLeaseAtPath(layout.root, layout.gate, operation, dependencies);
+    try {
+      if (await pathExists(layout.update)) throw new ExclusiveLeaseError("update_active");
+      await dependencies.afterCoordinationCheck?.("writer");
+      writerMarker = await acquireLeaseAtPath(
+        canonicalRoot,
+        writerMarkerPath(layout.writers, canonicalRoot),
+        operation,
+        dependencies,
+      );
+    } finally {
+      await gate.release();
+    }
+  } catch (error) {
+    try {
+      await writerMarker?.release();
+    } finally {
+      await projectLease.release();
+    }
+    throw error;
+  }
+
+  let released = false;
+  return {
+    path: projectLease.path,
+    owner: projectLease.owner,
+    async release(): Promise<void> {
+      if (released) return;
+      released = true;
+      try {
+        await writerMarker?.release();
+      } finally {
+        await projectLease.release();
+      }
+    },
+  };
+}
+
+export async function acquireUpdateExclusiveLease(
+  projectRoot: string,
+  dependencies: ExclusiveLeaseDependencies = {},
+): Promise<ExclusiveLease> {
+  const canonicalRoot = await fs.realpath(projectRoot);
+  const layout = await coordinationLayout(dependencies);
+  const gate = await acquireLeaseAtPath(layout.root, layout.gate, "workbench-update", dependencies);
+  let updateMarker: ExclusiveLease | undefined;
+  try {
+    updateMarker = await acquireLeaseAtPath(canonicalRoot, layout.update, "workbench-update", dependencies);
+    const writers = await fs.readdir(layout.writers);
+    if (writers.length > 0) throw new ExclusiveLeaseError("active_writers");
+    await dependencies.afterCoordinationCheck?.("updater");
+    return updateMarker;
+  } catch (error) {
+    await updateMarker?.release();
+    throw error;
+  } finally {
+    await gate.release();
+  }
 }
 
 export async function acquireExclusiveLeaseAtPath(
