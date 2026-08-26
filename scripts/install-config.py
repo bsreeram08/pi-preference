@@ -148,7 +148,32 @@ def mode_for(path: pathlib.Path, fallback: int) -> int:
     return stat.S_IMODE(path.stat().st_mode) if path.exists() else fallback
 
 
-def load_plan(agent_dir: pathlib.Path, root: pathlib.Path) -> list[tuple[pathlib.Path, bytes, int, str]]:
+def validate_parent_chain(base: pathlib.Path, path: pathlib.Path) -> None:
+    current = base
+    if current.is_symlink() or (current.exists() and not current.is_dir()):
+        raise ConfigError(f"configuration parent must be a real directory: {current}")
+    for part in path.parent.relative_to(base).parts:
+        current /= part
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            raise ConfigError(f"configuration parent must be a real directory: {current}")
+        if not current.exists():
+            return
+
+
+def load_plan(agent_dir: pathlib.Path, root: pathlib.Path, *, full: bool) -> list[tuple[pathlib.Path, bytes, int, str]]:
+    marker_path = agent_dir / "update" / "pi-workbench" / "profile.json"
+    validate_parent_chain(agent_dir, marker_path)
+    if marker_path.is_symlink():
+        raise ConfigError(f"configuration path must not be a symbolic link: {marker_path}")
+    if marker_path.exists() and not marker_path.is_file():
+        raise ConfigError(f"configuration path must be a regular file: {marker_path}")
+    selected_profile = "full" if full else "default"
+    plan = [
+        (marker_path, encoded_json({"version": 1, "profile": selected_profile}), 0o600, "profile.json"),
+    ]
+    if not full:
+        return plan
+
     defaults = root / "setup" / "defaults"
     settings_path = agent_dir / "settings.json"
     profile_path = agent_dir / "user-profile.json"
@@ -170,11 +195,11 @@ def load_plan(agent_dir: pathlib.Path, root: pathlib.Path) -> list[tuple[pathlib
     validate_evolution(baseline_evolution, defaults / "skill-evolution.json")
     validate_evolution(evolution, evolution_path)
 
-    plan = [
+    plan.extend([
         (settings_path, encoded_json(merge_settings(settings, baseline_settings)), mode_for(settings_path, 0o600), "settings.json"),
         (profile_path, encoded_json(merge_profile(profile, baseline_profile)), 0o600, "user-profile.json"),
         (evolution_path, encoded_json(merge_evolution(evolution, baseline_evolution)), 0o600, "skill-evolution-config.json"),
-    ]
+    ])
     if statusline_path.is_symlink():
         raise ConfigError(f"configuration path must not be a symbolic link: {statusline_path}")
     if not statusline_path.exists():
@@ -231,13 +256,9 @@ def main() -> int:
         print("worktree relationship: safe")
         return 0
 
-    if not arguments.full:
-        print("opinionated profile: not requested")
-        return 0
-
-    plan = load_plan(arguments.agent_dir, arguments.root)
+    plan = load_plan(arguments.agent_dir, arguments.root, full=arguments.full)
     if arguments.action == "preflight":
-        print("opinionated profile preflight: valid")
+        print(f"installation profile preflight: {'full' if arguments.full else 'default'}")
         return 0
     if arguments.backup_root is None:
         parser.error("--backup-root is required for apply")
@@ -247,7 +268,7 @@ def main() -> int:
         for path in changed:
             print(f"configured: {path}")
     else:
-        print("opinionated profile: already current")
+        print("installation profile: already current")
     return 0
 
 

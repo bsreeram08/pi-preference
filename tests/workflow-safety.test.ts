@@ -340,6 +340,27 @@ describe("project-scoped writer lease", () => {
     }
   });
 
+  test("supports the fixed updater lock path without changing project writer paths", async () => {
+    const root = await temporaryRoot("writer-update-");
+    const canonicalRoot = await fs.realpath(root);
+    const lockPath = path.join(canonicalRoot, "agent", "update", "pi-workbench", "update.lock");
+    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }));
+    try {
+      const lease = await acquireExclusiveLeaseAtPath(canonicalRoot, lockPath, "workbench-update", dependencies);
+      expect(lease.path).toBe(lockPath);
+      expect(lease.owner.operation).toBe("workbench-update");
+      await expect(acquireExclusiveLeaseAtPath(canonicalRoot, lockPath, "workbench-update", {
+        ...dependencies,
+        pid: 202,
+        token: () => UUID_B,
+        inspectProcess: async (pid) => ({ kind: "live", startIdentity: pid === 101 ? "owner-start" : "contender-start" }),
+      })).rejects.toMatchObject({ code: "writer_live" });
+      await lease.release();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("reports categorical lease errors without process output", () => {
     const error = new ExclusiveLeaseError("writer_ambiguous", "ambiguous");
     expect(error.message).toBe("Project writer lease is unavailable (ambiguous).");

@@ -3,6 +3,9 @@
 ## Unreleased
 
 - Moved Workbench card focus shortcuts to `Ctrl+Alt+Down` / `Ctrl+Alt+Up` to avoid Pi 0.84.3 fullscreen transcript shortcut conflicts.
+- Added the explicit `/workbench-update [status|apply]` updater with stable-release/main-bootstrap channel policy, isolated Git configuration, immutable-SHA fast-forward, strict root/submodule metadata and link preflight, confirmation-time candidate revalidation, fixed update leasing, no-follow 0600 audit appends, deterministic private config-install simulation, an explicit `UPDATED` result, and success-only terminal Pi reload with restart guidance on reload rejection.
+- Replaced destructive updater rollback with a verified same-filesystem checkout snapshot transaction and no-replace directory swap; failed candidate checkouts and replaced deterministic config values are retained at private manifest-recorded recovery locations, while concurrent paths remain untouched and force `ROLLBACK_INCOMPLETE`.
+- Made both installer profiles transactionally record their explicit versioned updater marker with backup-before-replacement; legacy profile choices are never guessed.
 - Hardened mandatory workflow phases to reject cancelled, nonzero, blank, failed-batch, malformed-clearance, and invalid execution-blocker results before downstream consumption.
 - Added run-owned cancellation for confirmed planning/execution/autopilot commands, corruption-visible atomic full-state persistence, and explicit `cancelled` versus `interrupted` terminal states without replay or resume.
 - Replaced free-form cmux workflow telemetry with a versioned categorical metadata-only lifecycle contract and removed prompt, task, detail, summary, raw-error, label, and tool-name forwarding.

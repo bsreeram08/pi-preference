@@ -168,7 +168,7 @@ command_response = next(
 if not command_response or not command_response.get("success"):
     raise SystemExit("error: Pi Workbench command discovery failed")
 names = {item.get("name") for item in command_response.get("data", {}).get("commands", [])}
-required = {"plan", "start-work", "autopilot", "delegate", "workflow-status", "memory"}
+required = {"plan", "start-work", "autopilot", "delegate", "workflow-status", "memory", "workbench-update"}
 forbidden = {"prometheus", "ulw", "ultrawork", "discipline", "discipline-status", "planner", "workflow"}
 missing = sorted(required - names)
 unexpected = sorted(forbidden & names)
