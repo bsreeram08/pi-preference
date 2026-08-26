@@ -74,7 +74,7 @@ bun install --frozen-lockfile
 
 Provider credentials, sessions, project runtime state, agent memory, update backups, and generated knowledge are never distributed. Configure model authentication separately. Automatic skill evolution is disabled without explicit configuration; `/skills-evolve` performs a user-requested one-time sync.
 
-After installation, start Pi or run `/reload`.
+After installation, start Pi or run `/reload`. Every successful installer run records the explicitly selected `default` or `full` profile in `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/update/pi-workbench/profile.json`; the updater never guesses a missing legacy value.
 
 ### Validate the approved capability inventory
 
@@ -89,14 +89,11 @@ The checker reads only the manifest and allowlisted capability metadata in `sett
 
 ### Update
 
-```bash
-cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
-git pull --ff-only
-git submodule update --init --recursive
-./install.sh
-```
+Run `/workbench-update` (or `/workbench-update status`) to perform a manual status check. It reports the current commit/version, selected stable release (or the one-time `main` bootstrap channel when no stable release exists), install profile, and a categorical blocked/no-update/update-available result. It never polls in the background.
 
-Use `./install.sh --full` again only if that profile remains desired.
+Run `/workbench-update apply` to recompute status, review the old/new commits and channel/profile, and explicitly confirm the update. The updater accepts only a clean writable recursive clone attached to `main` with the exact trusted HTTPS origin, exact top-level `reprompter` submodule layout and Git metadata, and unchanged installer-managed links. Every Git command runs with isolated configuration and replacement/attribute protections. It fetches only the selected release tag—or hardcoded `main` during bootstrap—into a private ref, validates and fast-forwards to the immutable candidate commit SHA, derives the candidate submodule gitlink strictly from that commit, and simulates the candidate config installer against the private original backup before running the live recorded profile. Before checkout mutation it verifies a complete private copy beside the resolved checkout on the same filesystem. Rollback preserves the entire failed candidate checkout and restores the old checkout with atomic no-replace directory renames; replaced deterministic config values are renamed into recovery storage before original bytes are installed without replacement. Unknown concurrent paths or values are never overwritten and produce `ROLLBACK_INCOMPLETE`; bounded fingerprints also detect ignored credential/runtime changes while excluding declared rebuildable cache trees. Verified success reports `UPDATED` before attempting one terminal Pi reload. If live reload is rejected, the update remains installed on disk and Pi must be restarted or reloaded manually. Missing or malformed profile markers block; rerun `./install.sh` or `./install.sh --full` once to record the desired profile.
+
+Update manifests and config recovery values are retained under `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/backups/update/`; failed candidate checkouts are retained at the private recovery location recorded in the manifest. Recovery paths are not printed in audit records or command UI. Any failure after backup triggers rollback and never reloads. `ROLLBACK_INCOMPLETE` requires manual inspection of the reported backup before another attempt. The updater lease coordinates cooperating Workbench writers only; it does not claim to lock out arbitrary same-user processes.
 
 ### Uninstall or restore
 
@@ -128,6 +125,7 @@ During a Workbench run, the footer shows the Supervisor and delegated agents as 
 | `/remember [preference]` | Explicitly teach Pi a durable preference |
 | `/memory [query]` | Show memory status/pending proposals, or recall relevant entries |
 | `/skills-evolve` | Stage and validate all new/updated skills from trusted sources, then reload |
+| `/workbench-update [status\|apply]` | Manually inspect or explicitly confirm a trusted built-in update |
 | `/skills-evolution-status` | Show trusted sources, cadence, audit, and community concept feed |
 | `/usage` | Show remaining coding-plan usage and reset times for the active provider |
 | `/council [idea]` | Run three council rounds, pause after Round 1, and draft/approve intent |

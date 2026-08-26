@@ -76,6 +76,7 @@ Aggregate phase timestamps, model routes, token/cost totals, and terminal states
 ### Residual P2 verification debt
 
 - `tests/workflow-orchestration.test.ts` still uses a source-order assertion for the council implementation lease. The council command is registered inside the large extension initializer and has no narrow injected lease/launch seam; adding one solely for this assertion would widen the production interface. Replace this with a behavioral contention test when that command is extracted behind a naturally reusable seam.
+- `/workbench-update apply` behaviorally tests successful terminal reload and rejected-reload guidance, but does not launch a second real Pi runtime to prove live extension replacement end to end. A process-level live-reload integration remains P2; reload rejection explicitly reports that the update is installed only on disk and requires `/reload` or restart.
 
 ## Explicitly rejected
 

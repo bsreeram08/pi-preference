@@ -114,6 +114,7 @@ describe("public installer configuration safety", () => {
     expect(await fs.readFile(path.join(backupRoot, "config", "settings.json"), "utf8")).toBe(originalSettings);
     expect(await fs.readFile(path.join(backupRoot, "config", "user-profile.json"), "utf8")).toBe(originalProfile);
     expect(await fs.readFile(path.join(backupRoot, "config", "skill-evolution-config.json"), "utf8")).toBe(originalEvolution);
+    expect(JSON.parse(await fs.readFile(path.join(agentDir, "update", "pi-workbench", "profile.json"), "utf8"))).toEqual({ version: 1, profile: "full" });
 
     const repeated = runConfig("apply", agentDir, backupRoot);
     expect(repeated.status).toBe(0);
@@ -206,16 +207,58 @@ describe("public installer configuration safety", () => {
     expect((await fs.lstat(path.join(extensionsDir, "startup-header.ts"))).isSymbolicLink()).toBe(false);
   }, 20_000);
 
-  test("keeps the default profile non-invasive", async () => {
+  test("records the default profile without changing unrelated configuration", async () => {
     const root = await temporaryRoot();
     const agentDir = path.join(root, "agent");
-    const result = spawnSync("python3", [SCRIPT, "apply", "--agent-dir", agentDir, "--root", ROOT], {
+    const backupRoot = path.join(root, "backup");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.writeFile(path.join(agentDir, "settings.json"), '{"theme":"custom"}\n');
+    const result = spawnSync("python3", [
+      SCRIPT,
+      "apply",
+      "--agent-dir", agentDir,
+      "--root", ROOT,
+      "--backup-root", backupRoot,
+    ], {
       cwd: ROOT,
       env: cleanEnvironment(agentDir),
       encoding: "utf8",
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("not requested");
-    expect(await fs.stat(agentDir).catch(() => undefined)).toBeUndefined();
+    expect(await fs.readFile(path.join(agentDir, "settings.json"), "utf8")).toBe('{"theme":"custom"}\n');
+    expect(JSON.parse(await fs.readFile(path.join(agentDir, "update", "pi-workbench", "profile.json"), "utf8"))).toEqual({ version: 1, profile: "default" });
+  });
+
+  test("rejects a symlinked updater profile directory", async () => {
+    const root = await temporaryRoot();
+    const agentDir = path.join(root, "agent");
+    const external = path.join(root, "external-update");
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.mkdir(external, { recursive: true });
+    await fs.symlink(external, path.join(agentDir, "update"));
+    const result = spawnSync("python3", [SCRIPT, "preflight", "--agent-dir", agentDir, "--root", ROOT], {
+      cwd: ROOT,
+      env: cleanEnvironment(agentDir),
+      encoding: "utf8",
+    });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("configuration parent must be a real directory");
+    expect(await fs.readdir(external)).toEqual([]);
+  });
+
+  test("backs up the previous profile marker before atomically replacing it", async () => {
+    const root = await temporaryRoot();
+    const agentDir = path.join(root, "agent");
+    const marker = path.join(agentDir, "update", "pi-workbench", "profile.json");
+    const backupRoot = path.join(root, "backup");
+    await fs.mkdir(path.dirname(marker), { recursive: true });
+    const previous = '{"version":1,"profile":"default"}\n';
+    await fs.writeFile(marker, previous, { mode: 0o640 });
+
+    const result = runConfig("apply", agentDir, backupRoot);
+    expect(result.status).toBe(0);
+    expect(await fs.readFile(path.join(backupRoot, "config", "profile.json"), "utf8")).toBe(previous);
+    expect(JSON.parse(await fs.readFile(marker, "utf8"))).toEqual({ version: 1, profile: "full" });
+    expect((await fs.stat(marker)).mode & 0o777).toBe(0o600);
   });
 });

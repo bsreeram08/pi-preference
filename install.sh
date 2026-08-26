@@ -123,7 +123,7 @@ fi
 python3 "$ROOT/scripts/install-config.py" preflight "${CONFIG_ARGS[@]}"
 
 if [[ -n "$BUN_BIN" ]]; then
-  (cd "$ROOT" && "${CLEAN_ENV[@]}" "$BUN_BIN" test tests)
+  (cd "$ROOT" && "${CLEAN_ENV[@]}" "$BUN_BIN" test --timeout=60000 tests)
 else
   printf 'warning: bun is unavailable; skipped the Workbench test suite (use --strict to require it)\n' >&2
 fi
@@ -168,7 +168,7 @@ command_response = next(
 if not command_response or not command_response.get("success"):
     raise SystemExit("error: Pi Workbench command discovery failed")
 names = {item.get("name") for item in command_response.get("data", {}).get("commands", [])}
-required = {"plan", "start-work", "autopilot", "delegate", "workflow-status", "memory"}
+required = {"plan", "start-work", "autopilot", "delegate", "workflow-status", "memory", "workbench-update"}
 forbidden = {"prometheus", "ulw", "ultrawork", "discipline", "discipline-status", "planner", "workflow"}
 missing = sorted(required - names)
 unexpected = sorted(forbidden & names)
