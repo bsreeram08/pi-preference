@@ -168,7 +168,7 @@ async function createFixture(profile: UpdateProfile = "default"): Promise<Fixtur
         args = args.map((value) => value === TRUSTED_REPOSITORY ? remote : value);
         gitArgs = args.slice(gitIndex + 1);
         const submoduleUpdate = gitArgs.includes("submodule") && gitArgs.includes("update");
-        if (controls.candidateLsTreeOutput !== undefined && gitArgs.includes("ls-tree")) {
+        if (controls.candidateLsTreeOutput !== undefined && gitArgs.includes("ls-tree") && gitArgs.includes("reprompter")) {
           return { stdout: controls.candidateLsTreeOutput, stderr: "", code: 0 };
         }
         if (controls.failFirstSubmoduleUpdate && submoduleUpdate && !failedSubmoduleUpdate) {
@@ -476,6 +476,32 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     const full = await createFixture("full");
     await fs.unlink(path.join(full.agentDir, "extensions", "startup-header.ts"));
     expect(await full.updater(fakeReleases([]), "full").status()).toMatchObject({ code: "INSTALL_UNSUPPORTED" });
+  });
+
+  test("rejects candidates with missing or wrong-kind managed link targets", async () => {
+    const missing = await createFixture("full");
+    git(missing.source, "rm", "setup/cmux-workbench.ts", "startup-header.ts");
+    git(missing.source, "commit", "-m", "remove managed sources");
+    const missingCommit = git(missing.source, "rev-parse", "HEAD");
+    missing.pushMain();
+    missing.tag("v1.2.0", missingCommit);
+    expect(await missing.updater(fakeReleases([release("v1.2.0")]), "full").status()).toMatchObject({
+      category: "blocked",
+      code: "CANDIDATE_INVALID",
+    });
+
+    const wrongKind = await createFixture();
+    git(wrongKind.source, "rm", "-r", "setup/pi-look");
+    await fs.writeFile(path.join(wrongKind.source, "setup", "pi-look"), "not a directory\n");
+    git(wrongKind.source, "add", "setup/pi-look");
+    git(wrongKind.source, "commit", "-m", "replace managed directory");
+    const wrongKindCommit = git(wrongKind.source, "rev-parse", "HEAD");
+    wrongKind.pushMain();
+    wrongKind.tag("v1.2.0", wrongKindCommit);
+    expect(await wrongKind.updater(fakeReleases([release("v1.2.0")])).status()).toMatchObject({
+      category: "blocked",
+      code: "CANDIDATE_INVALID",
+    });
   });
 
   test("rejects nested submodules and external submodule metadata", async () => {

@@ -636,6 +636,37 @@ export class WorkbenchUpdater {
     return this.captureCheckoutAt(this.root, false);
   }
 
+  private managedSources(profile: UpdateProfile): Array<readonly [string, "file" | "directory"]> {
+    const sources: Array<readonly [string, "file" | "directory"]> = [
+      ["setup/cmux-workbench.ts", "file"],
+      ["setup/pi-look", "directory"],
+      ["setup/themes/ember.json", "file"],
+    ];
+    if (profile === "full") sources.push(["startup-header.ts", "file"]);
+    return sources;
+  }
+
+  private async validateManagedSourcesAtCommit(commit: string, profile: UpdateProfile): Promise<void> {
+    const sources = this.managedSources(profile);
+    const result = await this.git(["ls-tree", "-z", commit, "--", ...sources.map(([relative]) => relative)]);
+    const records = result.stdout.split("\0").filter(Boolean);
+    if (records.length !== sources.length) throw new UpdateFailure("CANDIDATE_INVALID");
+    const actual = new Map<string, { mode: string; type: string }>();
+    for (const record of records) {
+      const match = /^(\d{6}) (blob|tree) [0-9a-f]{40,64}\t(.+)$/.exec(record);
+      if (!match || actual.has(match[3])) throw new UpdateFailure("CANDIDATE_INVALID");
+      actual.set(match[3], { mode: match[1], type: match[2] });
+    }
+    for (const [relative, kind] of sources) {
+      const item = actual.get(relative);
+      if (!item
+        || (kind === "file" && (item.type !== "blob" || (item.mode !== "100644" && item.mode !== "100755")))
+        || (kind === "directory" && (item.type !== "tree" || item.mode !== "040000"))) {
+        throw new UpdateFailure("CANDIDATE_INVALID");
+      }
+    }
+  }
+
   private async assertExpectedLinks(profile: UpdateProfile): Promise<void> {
     const extensionLink = path.join(this.agentDir, "extensions", "pi-workbench");
     if (extensionLink !== this.root) {
@@ -645,20 +676,24 @@ export class WorkbenchUpdater {
         throw new UpdateFailure("INSTALL_UNSUPPORTED");
       }
     }
-    const links: Array<readonly [string, string]> = [
-      [path.join(this.agentDir, "extensions", "cmux-workbench.ts"), path.join(this.root, "setup", "cmux-workbench.ts")],
-      [path.join(this.agentDir, "extensions", "pi-look"), path.join(this.root, "setup", "pi-look")],
-      [path.join(this.agentDir, "themes", "ember.json"), path.join(this.root, "setup", "themes", "ember.json")],
-    ];
-    if (profile === "full") links.push([path.join(this.agentDir, "extensions", "startup-header.ts"), path.join(this.root, "startup-header.ts")]);
-    for (const [link, expected] of links) {
+    const linkFor = (relative: string): string => relative === "setup/themes/ember.json"
+      ? path.join(this.agentDir, "themes", "ember.json")
+      : path.join(this.agentDir, "extensions", relative === "startup-header.ts" ? relative : path.basename(relative));
+    for (const [relative, kind] of this.managedSources(profile)) {
+      const link = linkFor(relative);
+      const expected = path.join(this.root, relative);
       await assertSafeParents(this.agentDir, link);
       const stat = await fs.lstat(link).catch(() => undefined);
       if (!stat?.isSymbolicLink()) throw new UpdateFailure("INSTALL_UNSUPPORTED");
       const target = await fs.readlink(link);
       if (path.resolve(path.dirname(link), target) !== expected) throw new UpdateFailure("INSTALL_UNSUPPORTED");
       const expectedStat = await fs.lstat(expected).catch(() => undefined);
-      if (!expectedStat || expectedStat.isSymbolicLink()) throw new UpdateFailure("INSTALL_UNSUPPORTED");
+      if (!expectedStat
+        || expectedStat.isSymbolicLink()
+        || (kind === "file" && !expectedStat.isFile())
+        || (kind === "directory" && !expectedStat.isDirectory())) {
+        throw new UpdateFailure("INSTALL_UNSUPPORTED");
+      }
     }
   }
 
@@ -789,6 +824,7 @@ export class WorkbenchUpdater {
       const candidateCommit = await this.fetchCandidate(candidate);
       partial = { ...partial, candidateCommit };
       await this.validateGitmodules(candidateCommit);
+      await this.validateManagedSourcesAtCommit(candidateCommit, local.profile);
       if (candidateCommit === local.currentCommit) return { category: "no-update", code: "EQUAL", ...partial };
 
       const candidateBehind = await this.git(["merge-base", "--is-ancestor", candidateCommit, local.currentCommit], [0, 1]);
@@ -1072,6 +1108,7 @@ export class WorkbenchUpdater {
     if (tree.stdout !== "") throw new UpdateFailure("UPDATE_FAILED");
     await this.inspectSubmodules();
     if (await this.readProfile() !== profile) throw new UpdateFailure("UPDATE_FAILED");
+    await this.assertExpectedLinks(profile);
   }
 
   private async verifyFileAt(pathname: string, item: FileSnapshot): Promise<boolean> {
