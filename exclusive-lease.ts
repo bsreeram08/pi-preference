@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export type WriterOperation = "start-work" | "autopilot" | "delegate-task" | "delegate-command" | "council-implement" | "workbench-update";
+export type WriterOperation = "plan" | "start-work" | "autopilot" | "delegate-task" | "delegate-command" | "council-implement" | "workbench-update";
 export type LeaseContentionKind = "live" | "stale" | "ambiguous" | "malformed";
 
 export interface ExclusiveLeaseOwner {
@@ -57,7 +57,7 @@ export class ExclusiveLeaseError extends Error {
   }
 }
 
-const OPERATIONS = new Set<WriterOperation>(["start-work", "autopilot", "delegate-task", "delegate-command", "council-implement", "workbench-update"]);
+const OPERATIONS = new Set<WriterOperation>(["plan", "start-work", "autopilot", "delegate-task", "delegate-command", "council-implement", "workbench-update"]);
 const MAX_PS_BYTES = 512;
 
 function isEnoent(error: unknown): boolean {

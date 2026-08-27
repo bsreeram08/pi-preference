@@ -18,7 +18,7 @@ import {
   parsePlanningClearance,
   parsePlanVerdict,
   planReviewsPass,
-  verificationPasses,
+  legacyVerificationPasses,
 } from "../workflow-prompts.ts";
 import {
   createWorkflowPlanId,
@@ -231,18 +231,26 @@ describe("Pi workflow routing", () => {
     expect(local.skills).not.toContain("emil-design-eng");
   });
 
-  test("fails plan and code review closed when markers are missing", () => {
+  test("requires one strict terminal plan and code verdict marker", () => {
     expect(parsePlanningClearance('<clearance>{"ready":false,"questions":["Which API?"],"assumptions":[]}</clearance>')).toEqual({
       ready: false,
       questions: ["Which API?"],
       assumptions: [],
     });
     expect(parsePlanVerdict("looks fine")).toBe("REJECT");
-    expect(parsePlanVerdict("<plan-verdict>OKAY</plan-verdict>")).toBe("OKAY");
+    expect(parsePlanVerdict("review prose\n<plan-verdict>OKAY</plan-verdict>\n")).toBe("OKAY");
+    expect(parsePlanVerdict("<plan-verdict>OKAY</plan-verdict>\ntrailing prose")).toBe("REJECT");
+    expect(parsePlanVerdict("<plan-verdict>REJECT</plan-verdict>\n<plan-verdict>OKAY</plan-verdict>")).toBe("REJECT");
+    expect(parsePlanVerdict("<plan-verdict>okay</plan-verdict>")).toBe("REJECT");
+    expect(parsePlanVerdict("<plan-verdict>unknown</plan-verdict>\n<plan-verdict>OKAY</plan-verdict>")).toBe("REJECT");
     expect(parseCodeVerdict("missing marker")).toBe("CHANGES_REQUIRED");
-    expect(parseCodeVerdict("<code-verdict>BLOCKED</code-verdict>")).toBe("BLOCKED");
-    expect(verificationPasses("done <verified/>")).toBe(true);
-    expect(verificationPasses("<verified/> but also <failed/>")).toBe(false);
+    expect(parseCodeVerdict("review prose\n<code-verdict>BLOCKED</code-verdict>\n")).toBe("BLOCKED");
+    expect(parseCodeVerdict("<code-verdict>PASS</code-verdict>\ntrailing prose")).toBe("CHANGES_REQUIRED");
+    expect(parseCodeVerdict("<code-verdict>BLOCKED</code-verdict>\n<code-verdict>PASS</code-verdict>")).toBe("CHANGES_REQUIRED");
+    expect(parseCodeVerdict("<code-verdict>pass</code-verdict>")).toBe("CHANGES_REQUIRED");
+    expect(parseCodeVerdict("<code-verdict>unknown</code-verdict>\n<code-verdict>PASS</code-verdict>")).toBe("CHANGES_REQUIRED");
+    expect(legacyVerificationPasses("done <verified/>")).toBe(true);
+    expect(legacyVerificationPasses("<verified/> but also <failed/>")).toBe(false);
     expect(parseExecutionBlockerVerdict("## Blockers\n- None.\n")).toBe("clear");
     expect(parseExecutionBlockerVerdict("## Blockers\n- Missing migration rollback.\n")).toBe("blocked");
     expect(parseExecutionBlockerVerdict("No section")).toBe("invalid");

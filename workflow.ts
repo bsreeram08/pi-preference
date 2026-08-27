@@ -23,6 +23,7 @@ import {
   buildFixTask,
   buildImplementationTask,
   buildIndependentVerificationTask,
+  buildPacketVerificationTask,
   buildRequirementsAnalysisTask,
   buildPlanReviewTask,
   buildPlanRevisionTask,
@@ -30,7 +31,7 @@ import {
   codeReviewsPass,
   parsePlanningClearance,
   planReviewsPass,
-  verificationPasses,
+  legacyVerificationPasses,
   type PlanningClearance,
 } from "./workflow-prompts.ts";
 import {
@@ -45,6 +46,14 @@ import {
   writeWorkflowRunArtifact,
   type WorkflowPlanState,
 } from "./workflow-state.ts";
+import {
+  bindWorkflowTaskPacket,
+  evaluateWorkflowVerification,
+  formatWorkflowVerificationFailures,
+  packetVerificationPasses,
+  type WorkflowPacketVerification,
+  type WorkflowTaskPacket,
+} from "./workflow-task-packet.ts";
 import { loadConfig, type WorkbenchConfig } from "./config.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { ensureProjectState, findProjectRoot, getProjectPaths } from "./project.ts";
@@ -168,6 +177,7 @@ function createPlanState(id: string, task: string, plan: string, interviewNotes:
     updatedAt: timestamp,
     reviewRounds: 0,
     planPath: "",
+    verificationMode: "packet",
   };
 }
 
@@ -465,10 +475,20 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       signal,
     );
     throwIfWorkflowCancelled(signal);
-    let plan = planResult.output;
+    let plan = planResult.output.trim();
     state.plan = plan;
     state.interviewNotes = interviewNotes;
     state.updatedAt = now();
+    let reviewedPacket: WorkflowTaskPacket;
+    try {
+      reviewedPacket = bindWorkflowTaskPacket(plan);
+    } catch (error) {
+      state.status = "blocked";
+      await saveWorkflowPlan(workflowPaths, state);
+      progress.finish("blocked", "Planner produced an invalid workflow task packet");
+      report("Workflow plan blocked", `The plan cannot be reviewed because its workflow task packet is invalid: ${error instanceof Error ? error.message : String(error)}\n\nDraft: ${state.planPath}`);
+      return { state, cancelled: false, executable: false };
+    }
     await saveWorkflowPlan(workflowPaths, state);
 
     let reviews: AgentResult[] = [];
@@ -501,8 +521,18 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         signal,
       );
       throwIfWorkflowCancelled(signal);
-      plan = planResult.output;
+      plan = planResult.output.trim();
       state.plan = plan;
+      state.updatedAt = now();
+      try {
+        reviewedPacket = bindWorkflowTaskPacket(plan);
+      } catch (error) {
+        state.status = "blocked";
+        await saveWorkflowPlan(workflowPaths, state);
+        progress.finish("blocked", "Planner revision has an invalid workflow task packet");
+        report("Workflow plan blocked", `The revised plan cannot be reviewed because its workflow task packet is invalid: ${error instanceof Error ? error.message : String(error)}\n\nDraft: ${state.planPath}`);
+        return { state, cancelled: false, executable: false };
+      }
       await saveWorkflowPlan(workflowPaths, state);
     }
 
@@ -510,6 +540,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       throwIfWorkflowCancelled(signal);
       state.status = "approved";
       state.plan = plan;
+      state.verificationMode = "packet";
+      state.packet = reviewedPacket;
       state.updatedAt = now();
       await saveWorkflowPlan(workflowPaths, state);
       return { state, cancelled: false, executable: true };
@@ -534,6 +566,14 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       state.plan = editedPlan;
       state.status = "draft";
       state.updatedAt = now();
+      try {
+        reviewedPacket = bindWorkflowTaskPacket(editedPlan);
+      } catch (error) {
+        await saveWorkflowPlan(workflowPaths, state);
+        progress.finish("needs_attention", "The edited plan has an invalid workflow task packet");
+        report("Edited plan needs revision", `The user-edited plan remains a draft because its workflow task packet is invalid: ${error instanceof Error ? error.message : String(error)}\n\nDraft: ${state.planPath}`);
+        return { state, cancelled: false, executable: false };
+      }
       await saveWorkflowPlan(workflowPaths, state);
       const editedReviews = await reviewPlan(root, config, task, editedPlan, progress, "user-edit", signal);
       throwIfWorkflowCancelled(signal);
@@ -555,6 +595,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     throwIfWorkflowCancelled(signal);
     state.plan = plan;
     state.status = approved ? "approved" : "draft";
+    state.verificationMode = approved ? "packet" : undefined;
+    state.packet = approved ? reviewedPacket : undefined;
     state.updatedAt = now();
     await saveWorkflowPlan(workflowPaths, state);
     return { state, cancelled: false, executable: approved };
@@ -585,7 +627,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       config,
       "execution-manager",
       state.task,
-      buildExecutionBriefTask(state.task, state.plan),
+      buildExecutionBriefTask(state.task, state.plan, state.packet),
       progress,
       "execution-management",
       "Execution management",
@@ -610,7 +652,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       config,
       "implementer",
       state.task,
-      buildImplementationTask(state.task, state.plan, executionManager.output),
+      buildImplementationTask(state.task, state.plan, executionManager.output, state.packet),
       progress,
       "execution-worker",
       "Implementer implementation",
@@ -632,8 +674,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         root,
         config,
         [
-          { role: "quality-reviewer", task: buildCodeReviewTask("quality-reviewer", state.task, state.plan, implementation.output) },
-          { role: "technical-reviewer", task: buildCodeReviewTask("technical-reviewer", state.task, state.plan, implementation.output) },
+          { role: "quality-reviewer", task: buildCodeReviewTask("quality-reviewer", state.task, state.plan, implementation.output, state.packet) },
+          { role: "technical-reviewer", task: buildCodeReviewTask("technical-reviewer", state.task, state.plan, implementation.output, state.packet) },
         ],
         state.task,
         progress,
@@ -646,7 +688,9 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       await writeWorkflowRunArtifact(workflowPaths, state.id, `reviews-${cycle}.md`, reviewsText);
 
       progress.update(`verification cycle ${cycle}: canonical checks`);
-      const verificationTask = buildIndependentVerificationTask(state.task, state.plan, implementation.output);
+      const verificationTask = state.packet
+        ? buildPacketVerificationTask(state.task, state.plan, implementation.output, state.packet)
+        : buildIndependentVerificationTask(state.task, state.plan, implementation.output);
       const verification = await runRole(
         root,
         config,
@@ -660,9 +704,23 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         signal,
       );
       throwIfWorkflowCancelled(signal);
-      await writeWorkflowRunArtifact(workflowPaths, state.id, `verification-${cycle}.md`, verification.output);
+      const packetVerification: WorkflowPacketVerification | undefined = state.packet
+        ? evaluateWorkflowVerification(verification.output, state.packet)
+        : undefined;
+      const verificationRecord = packetVerification
+        ? JSON.stringify(packetVerification, null, 2)
+        : verification.output;
+      await writeWorkflowRunArtifact(workflowPaths, state.id, `verification-${cycle}.md`, verificationRecord);
+      if (packetVerification) {
+        state.execution.packetVerification = packetVerification;
+        state.updatedAt = now();
+        await saveWorkflowPlan(workflowPaths, state);
+      }
+      const verificationPassed = packetVerification
+        ? packetVerificationPasses(packetVerification)
+        : legacyVerificationPasses(verification.output);
 
-      if (codeReviewsPass(reviews) && verificationPasses(verification.output)) {
+      if (codeReviewsPass(reviews) && verificationPassed) {
         throwIfWorkflowCancelled(signal);
         state.status = "verified";
         state.updatedAt = now();
@@ -671,7 +729,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         state.execution.summary = `Verified after ${cycle} review cycle${cycle === 1 ? "" : "s"}.`;
         await saveWorkflowPlan(workflowPaths, state);
         progress.finish("completed", `Verified after ${cycle} review cycle${cycle === 1 ? "" : "s"}`);
-        report("Workflow work verified", `The approved plan was implemented and independently verified.\n\n${verification.output}\n\nPlan: ${state.planPath}\nRun evidence: ${pathJoinForDisplay(workflowPaths.runs, state.id)}`);
+        report("Workflow work verified", `The approved plan was implemented and independently verified.\n\n${verificationRecord}\n\nPlan: ${state.planPath}\nRun evidence: ${pathJoinForDisplay(workflowPaths.runs, state.id)}`);
         return true;
       }
 
@@ -682,7 +740,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         state.execution.summary = `Verification did not pass after ${cycle} cycles.`;
         await saveWorkflowPlan(workflowPaths, state);
         progress.finish("blocked", `Verification did not pass after ${cycle} cycles`);
-        report("Workflow work not verified", `The workflow exhausted its bounded fix loops and refuses to claim completion.\n\n${reviewsText}\n\n${verification.output}\n\nPlan: ${state.planPath}`);
+        report("Workflow work not verified", `The workflow exhausted its bounded fix loops and refuses to claim completion.\n\n${reviewsText}\n\n${verificationRecord}\n\nPlan: ${state.planPath}`);
         return false;
       }
 
@@ -692,7 +750,14 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         config,
         "implementer",
         state.task,
-        buildFixTask(state.task, state.plan, implementation.output, reviewsText, verification.output),
+        buildFixTask(
+          state.task,
+          state.plan,
+          implementation.output,
+          reviewsText,
+          packetVerification ? formatWorkflowVerificationFailures(packetVerification) : verification.output,
+          state.packet,
+        ),
         progress,
         `execution-fix-${cycle}`,
         `Fix cycle ${cycle}`,
@@ -723,44 +788,47 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       `Pi will run discovery, a bounded Planner interview, Requirements Analyst gap analysis, and up to ${project.config.workflowMaxPlanReviewLoops} Quality Reviewer + Technical Reviewer review rounds. No source files will be changed.`,
     );
     if (!confirmed) return;
-    try {
-      await assertWorkflowAuthorityUnchanged(project.workflowPaths, authority);
-    } catch (error) {
-      if (!(error instanceof WorkflowStateSnapshotMismatchError)) throw error;
-      report("Workflow state changed", error.message);
-      return;
-    }
 
     const runController = new AbortController();
-    dashboard.beginRun(`workflow-plan-${Date.now()}`, runController);
-    const progress = progressFor(pi, ctx, "Planner", task, "plan");
     try {
-      const result = await createPlan(project.root, project.paths, project.config, task, ctx, progress, { autonomous: false, autoApprove: false }, runController.signal);
-      if (result.state) {
-        report(
-          result.state.status === "approved" ? "Workflow plan approved" : "Workflow plan saved",
-          `${formatWorkflowPlanStatus(result.state)}\n\n${result.state.status === "approved" ? "Run `/start-work` when ready." : "Revise or rerun `/plan` before execution."}`,
-        );
-      }
-      progress.finish(result.cancelled ? "cancelled" : "completed", result.cancelled ? "Planning cancelled" : "Planning finished");
-    } catch (error) {
-      const cancelled = isWorkflowCancellation(error, runController.signal);
-      const message = error instanceof Error ? error.message : String(error);
-      try {
-        const current = await loadCurrentWorkflowPlan(project.workflowPaths);
-        if (current && current.status !== "blocked" && current.status !== "verified") {
-          current.status = cancelled ? "cancelled" : "interrupted";
-          current.updatedAt = now();
-          await saveWorkflowPlan(project.workflowPaths, current);
+      await withLease(project.root, "plan", async () => {
+        await assertWorkflowAuthorityUnchanged(project.workflowPaths, authority);
+        dashboard.beginRun(`workflow-plan-${Date.now()}`, runController);
+        const progress = progressFor(pi, ctx, "Planner", task, "plan");
+        try {
+          const result = await createPlan(project.root, project.paths, project.config, task, ctx, progress, { autonomous: false, autoApprove: false }, runController.signal);
+          if (result.state) {
+            report(
+              result.state.status === "approved" ? "Workflow plan approved" : "Workflow plan saved",
+              `${formatWorkflowPlanStatus(result.state)}\n\n${result.state.status === "approved" ? "Run `/start-work` when ready." : "Revise or rerun `/plan` before execution."}`,
+            );
+          }
+          progress.finish(result.cancelled ? "cancelled" : "completed", result.cancelled ? "Planning cancelled" : "Planning finished");
+        } catch (error) {
+          const cancelled = isWorkflowCancellation(error, runController.signal);
+          const message = error instanceof Error ? error.message : String(error);
+          try {
+            const current = await loadCurrentWorkflowPlan(project.workflowPaths);
+            if (current && current.status !== "blocked" && current.status !== "verified") {
+              current.status = cancelled ? "cancelled" : "interrupted";
+              current.updatedAt = now();
+              await saveWorkflowPlan(project.workflowPaths, current);
+            }
+          } catch {
+            // The original planning failure remains authoritative.
+          }
+          progress.finish(cancelled ? "cancelled" : "interrupted", cancelled ? "Planning cancelled" : "Planning interrupted");
+          report(cancelled ? "Workflow planning cancelled" : "Workflow planning interrupted", `${message}\n\nNo implementation was started.`);
+        } finally {
+          progress.clear();
+          dashboard.endRun();
         }
-      } catch {
-        // The original planning failure remains authoritative.
-      }
-      progress.finish(cancelled ? "cancelled" : "interrupted", cancelled ? "Planning cancelled" : "Planning interrupted");
-      report(cancelled ? "Workflow planning cancelled" : "Workflow planning interrupted", `${message}\n\nNo implementation was started.`);
-    } finally {
-      progress.clear();
-      dashboard.endRun();
+      });
+    } catch (error) {
+      report(
+        error instanceof WorkflowStateSnapshotMismatchError ? "Workflow state changed" : "Workflow writer unavailable",
+        error instanceof Error ? error.message : String(error),
+      );
     }
   }
 

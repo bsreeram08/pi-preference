@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added canonical host-bound workflow task packets to newly approved `/plan` and `/autopilot` plans, with an explicit non-downgradable packet verification mode, bounded strict criterion-ordered evidence, pre-review parsing, authoritative `current.json` evidence persistence across interruption, packetless v1 compatibility, bounded fix-loop behavior, update-aware `/plan` writer leasing, and explicit documentation that verifier testimony is not host-attested command execution proof.
 - Fixed Git-installed startup by registering the cmux bridge from the main Workbench directory extension while retaining a dependency-free compatibility entry for existing installer and updater manifests.
 - Fixed updater preflight to accept only value-validated ordinary historical `branch.*.remote/merge` tracking entries and contained legacy RePrompter `.git` metadata, while continuing to reject unsafe branch settings and external or symlinked submodule metadata.
 - Moved Workbench card focus shortcuts to `Ctrl+Alt+Down` / `Ctrl+Alt+Up` to avoid Pi 0.84.3 fullscreen transcript shortcut conflicts.

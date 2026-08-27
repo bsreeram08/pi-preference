@@ -30,6 +30,7 @@ import {
   WorkflowStateSnapshotMismatchError,
   type WorkflowPlanState,
 } from "../workflow-state.ts";
+import { bindWorkflowTaskPacket, canonicalWorkflowTaskPacketMarker, evaluateWorkflowVerification, type WorkflowTaskPacketDeclaration } from "../workflow-task-packet.ts";
 import type { AgentResult, AgentSpec } from "../types.ts";
 
 function result(overrides: Partial<AgentResult> = {}): AgentResult {
@@ -57,6 +58,26 @@ async function temporaryRoot(prefix: string): Promise<string> {
 
 const UUID_A = "11111111-1111-4111-8111-111111111111";
 const UUID_B = "22222222-2222-4222-8222-222222222222";
+const PACKET_DECLARATION: WorkflowTaskPacketDeclaration = {
+  schemaVersion: 1,
+  scope: ["Persist a bound workflow task packet."],
+  nonGoals: ["Do not execute packet content."],
+  acceptanceCriteria: [{ id: "state-roundtrip", description: "Valid packet state round-trips.", requiredEvidenceKinds: ["automated-test"] }],
+};
+
+function packetPlan(): string {
+  return `# Plan\n\nImplement it.\n\n${canonicalWorkflowTaskPacketMarker(PACKET_DECLARATION)}`;
+}
+
+function passingVerification(planText: string) {
+  const packet = bindWorkflowTaskPacket(planText);
+  return evaluateWorkflowVerification(`<workflow-verification>${JSON.stringify({
+    schemaVersion: 1,
+    packetId: packet.packetId,
+    planDigest: packet.planDigest,
+    criteria: [{ criterionId: "state-roundtrip", status: "passed", evidence: [{ kind: "automated-test", summary: "State tests passed." }] }],
+  })}</workflow-verification>`, packet);
+}
 
 function leaseDependencies(
   pid: number,
@@ -116,6 +137,24 @@ describe("atomic workflow state", () => {
     }
   });
 
+  test("keeps current.json authoritative when a same-plan projection commits before current write fails", async () => {
+    const root = await temporaryRoot("workflow-state-same-plan-fault-");
+    const paths = getWorkflowPaths(root);
+    try {
+      const previous = plan("same-plan");
+      previous.task = "Authoritative task";
+      await saveWorkflowPlan(paths, previous);
+      const next = { ...previous, plan: "# Plan\n\nProjection-only update.", updatedAt: "2026-08-25T00:01:00.000Z" };
+
+      await expect(saveWorkflowPlan(paths, next, { beforeCurrentCommit: () => { throw new Error("current fault"); } })).rejects.toThrow("current fault");
+
+      expect((await loadCurrentWorkflowPlan(paths))?.plan).toBe("# Plan\n\nImplement it.");
+      expect(await fs.readFile(previous.planPath, "utf8")).toContain("Projection-only update");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("serializes concurrent saves per workflow root", async () => {
     const root = await temporaryRoot("workflow-state-concurrent-");
     const paths = getWorkflowPaths(root);
@@ -154,10 +193,123 @@ describe("atomic workflow state", () => {
         { ...stored, updatedAt: "not-an-iso-time" },
         { ...stored, status: "executing", execution: { attempts: 1, verificationPassed: false } },
         { ...stored, status: "verified", execution: { startedAt: stored.createdAt, attempts: 1, verificationPassed: false } },
+        { ...stored, status: "executing", execution: { startedAt: stored.createdAt, completedAt: stored.updatedAt, attempts: 1, verificationPassed: false } },
+        { ...stored, status: "blocked", execution: { startedAt: stored.createdAt, attempts: 1, verificationPassed: false } },
+        { ...stored, status: "cancelled", execution: { startedAt: stored.createdAt, attempts: 1, verificationPassed: false } },
+        { ...stored, status: "interrupted", execution: { startedAt: stored.createdAt, attempts: 1, verificationPassed: false } },
+        { ...stored, status: "verified", execution: { startedAt: "2026-08-26T00:00:00.000Z", completedAt: stored.createdAt, attempts: 1, verificationPassed: true } },
       ]) {
         await fs.writeFile(paths.current, `${JSON.stringify(broken)}\n`, "utf8");
         await expect(loadCurrentWorkflowPlan(paths)).rejects.toBeInstanceOf(WorkflowStateCorruptionError);
       }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps packetless v1 compatibility and round-trips a valid bound packet", async () => {
+    const root = await temporaryRoot("workflow-state-packet-roundtrip-");
+    const paths = getWorkflowPaths(root);
+    try {
+      const legacy = plan("legacy-plan");
+      await saveWorkflowPlan(paths, legacy);
+      expect((await loadCurrentWorkflowPlan(paths))?.verificationMode).toBeUndefined();
+      expect((await loadCurrentWorkflowPlan(paths))?.packet).toBeUndefined();
+
+      const packetState = plan("packet-plan");
+      packetState.plan = packetPlan();
+      packetState.verificationMode = "packet";
+      packetState.packet = bindWorkflowTaskPacket(packetState.plan);
+      await saveWorkflowPlan(paths, packetState);
+      expect((await loadCurrentWorkflowPlan(paths))?.packet).toEqual(packetState.packet);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("packet verification mode prevents packet field-deletion downgrade", async () => {
+    const root = await temporaryRoot("workflow-state-packet-downgrade-");
+    const paths = getWorkflowPaths(root);
+    try {
+      const state = plan("packet-downgrade");
+      state.plan = packetPlan();
+      state.verificationMode = "packet";
+      state.packet = bindWorkflowTaskPacket(state.plan);
+      await saveWorkflowPlan(paths, state);
+      const stored = JSON.parse(await fs.readFile(paths.current, "utf8"));
+
+      for (const broken of [
+        { ...stored, packet: undefined },
+        { ...stored, verificationMode: undefined },
+        { ...stored, verificationMode: undefined, packet: undefined },
+      ]) {
+        await fs.writeFile(paths.current, `${JSON.stringify(broken)}\n`, "utf8");
+        await expect(loadCurrentWorkflowPlan(paths)).rejects.toBeInstanceOf(WorkflowStateCorruptionError);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects changed packet plan, declaration, digest, id, and unknown nested fields", async () => {
+    const root = await temporaryRoot("workflow-state-packet-corrupt-");
+    const paths = getWorkflowPaths(root);
+    try {
+      const state = plan("packet-corrupt");
+      state.plan = packetPlan();
+      state.verificationMode = "packet";
+      state.packet = bindWorkflowTaskPacket(state.plan);
+      await saveWorkflowPlan(paths, state);
+      const stored = JSON.parse(await fs.readFile(paths.current, "utf8"));
+      for (const broken of [
+        { ...stored, plan: `${stored.plan}\nchanged` },
+        { ...stored, packet: { ...stored.packet, scope: ["changed"] } },
+        { ...stored, packet: { ...stored.packet, planDigest: `sha256:${"0".repeat(64)}` } },
+        { ...stored, packet: { ...stored.packet, packetId: `wtp-${"0".repeat(32)}` } },
+        { ...stored, packet: { ...stored.packet, acceptanceCriteria: [{ ...stored.packet.acceptanceCriteria[0], unknown: true }] } },
+      ]) {
+        await fs.writeFile(paths.current, `${JSON.stringify(broken)}\n`, "utf8");
+        await expect(loadCurrentWorkflowPlan(paths)).rejects.toBeInstanceOf(WorkflowStateCorruptionError);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects packet verification without a packet and incomplete packet-verified state", async () => {
+    const root = await temporaryRoot("workflow-state-packet-verification-");
+    const paths = getWorkflowPaths(root);
+    try {
+      const packetState = plan("packet-verified");
+      packetState.plan = packetPlan();
+      packetState.verificationMode = "packet";
+      packetState.packet = bindWorkflowTaskPacket(packetState.plan);
+      const verification = passingVerification(packetState.plan);
+      packetState.status = "verified";
+      packetState.execution = {
+        startedAt: packetState.createdAt,
+        completedAt: packetState.updatedAt,
+        attempts: 1,
+        verificationPassed: true,
+        packetVerification: verification,
+      };
+      await saveWorkflowPlan(paths, packetState);
+
+      const stored = JSON.parse(await fs.readFile(paths.current, "utf8"));
+      for (const broken of [
+        { ...stored, packet: undefined },
+        { ...stored, execution: { ...stored.execution, packetVerification: undefined } },
+        { ...stored, execution: { ...stored.execution, packetVerification: { ...stored.execution.packetVerification, result: "failed" } } },
+        { ...stored, execution: { ...stored.execution, packetVerification: { ...stored.execution.packetVerification, criteria: [{ ...stored.execution.packetVerification.criteria[0], unknown: true }] } } },
+      ]) {
+        await fs.writeFile(paths.current, `${JSON.stringify(broken)}\n`, "utf8");
+        await expect(loadCurrentWorkflowPlan(paths)).rejects.toBeInstanceOf(WorkflowStateCorruptionError);
+      }
+
+      const legacy = plan("legacy-with-verification");
+      legacy.status = "blocked";
+      legacy.execution = { startedAt: legacy.createdAt, completedAt: legacy.updatedAt, attempts: 1, verificationPassed: false, packetVerification: verification };
+      await expect(saveWorkflowPlan(paths, legacy)).rejects.toBeInstanceOf(WorkflowStateCorruptionError);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -262,6 +414,20 @@ describe("atomic workflow state", () => {
 });
 
 describe("project-scoped writer lease", () => {
+  test("treats plan as a project writer that contends with updates", async () => {
+    const root = await temporaryRoot("writer-plan-operation-");
+    const agentDir = path.join(root, "agent");
+    const dependencies = leaseDependencies(101, UUID_A, () => ({ kind: "live", startIdentity: "owner-start" }), agentDir);
+    try {
+      const lease = await acquireExclusiveLease(root, "plan", dependencies);
+      expect(lease.owner.operation).toBe("plan");
+      await expect(acquireUpdateExclusiveLease(root, { ...dependencies, pid: 202, token: () => UUID_B })).rejects.toMatchObject({ code: "active_writers" });
+      await lease.release();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("blocks live contention and never takes over stale, reused, malformed, or ambiguous owners", async () => {
     const scenarios: Array<{ name: string; setup?: (lock: string) => Promise<void>; inspect: (pid: number) => ProcessInspection; expected: string }> = [
       { name: "live", inspect: (pid) => ({ kind: "live", startIdentity: pid === 101 ? "owner-start" : "new-start" }), expected: "writer_live" },
