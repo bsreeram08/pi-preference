@@ -1,5 +1,6 @@
 import type { WorkflowAgentProfile } from "./workflow-agents.ts";
 import { formatConceptGuidance } from "./workflow-concepts.ts";
+import { formatWorkflowTaskPacket, type WorkflowTaskPacket } from "./workflow-task-packet.ts";
 import type { AgentResult } from "./types.ts";
 
 export interface PlanningClearance {
@@ -154,7 +155,12 @@ Use numbered steps. Each step must contain **Change**, **Paths**, **Dependencies
 ## Verification Matrix
 Name exact tests/checks, scenarios, and expected results.
 ## Risks and Rollback
-## Final Completion Criteria`;
+## Final Completion Criteria
+
+End the trimmed plan with exactly one canonical one-line marker and no text after it:
+<workflow-task-packet>{"schemaVersion":1,"scope":["..."],"nonGoals":["..."],"acceptanceCriteria":[{"id":"kebab-case-id","description":"...","requiredEvidenceKinds":["automated-test"]}]}</workflow-task-packet>
+
+Marker rules: exact field order shown; scope and nonGoals each contain 1-16 unique trimmed one-line strings of at most 300 UTF-8 bytes; acceptanceCriteria contains 1-16 entries in verification order. Every criterion has exactly id, description, requiredEvidenceKinds in that order. IDs are unique kebab-case strings starting with a letter and at most 64 bytes; descriptions are trimmed one-line strings at most 500 bytes; requiredEvidenceKinds contains 1-5 unique values from automated-test, static-analysis, build, runtime-observation, artifact-inspection. Text must not contain control characters, U+2028, U+2029, or unpaired surrogates. The marker JSON must be canonical compact JSON with no duplicate, reordered, or unknown fields. Never include commands or executable orchestration in the packet. The Markdown plan may still name project verification command guidance.`;
 }
 
 export function buildPlanReviewTask(
@@ -174,6 +180,8 @@ PLAN:
 ${plan}
 
 ${focus}
+
+Reject the plan if its terminal <workflow-task-packet> marker is missing, multiple, nonterminal, multiline, noncanonical, out of bounds, contains unknown/reordered/duplicate fields or values, includes executable command fields, or has criteria that do not cover the plan's observable completion requirements.
 
 Return:
 ## Verdict
@@ -199,10 +207,18 @@ ${plan}
 INDEPENDENT REVIEWS:
 ${reviews}
 
-Return the complete replacement plan using the same required plan structure. Do not discuss the revision process outside the plan.`;
+Return the complete replacement plan using the same required plan structure. End it with exactly one valid canonical terminal <workflow-task-packet> marker using the planner's schema and bounds. Never put commands in the packet. Do not discuss the revision process outside the plan.`;
 }
 
-export function buildExecutionBriefTask(task: string, plan: string): string {
+function packetBindingPrompt(packet: WorkflowTaskPacket | undefined): string {
+  return packet ? `\nBOUND TASK PACKET:\nPacket: ${packet.packetId}\nPlan digest: ${packet.planDigest}\n` : "";
+}
+
+function packetVerificationPrompt(packet: WorkflowTaskPacket): string {
+  return `\nBOUND TASK PACKET:\n${formatWorkflowTaskPacket(packet)}\n`;
+}
+
+export function buildExecutionBriefTask(task: string, plan: string, packet?: WorkflowTaskPacket): string {
   return `Prepare execution handoffs for this approved plan. Remain read-only.
 
 USER TASK:
@@ -210,7 +226,7 @@ ${task}
 
 APPROVED PLAN:
 ${plan}
-
+${packetBindingPrompt(packet)}
 Inspect the current repository because it may have changed since planning. Convert the plan into ordered work packets for one write-capable worker. Record prerequisite checks, paths, cumulative conventions, risks, and a verification gate for each packet. Flag a blocker rather than silently rewriting the approved scope.
 
 Return:
@@ -221,7 +237,7 @@ Return:
 ## Blockers`;
 }
 
-export function buildImplementationTask(task: string, plan: string, executionBrief: string): string {
+export function buildImplementationTask(task: string, plan: string, executionBrief: string, packet?: WorkflowTaskPacket): string {
   return `Implement this approved workflow plan end-to-end in the current working tree.
 
 USER TASK:
@@ -229,7 +245,7 @@ ${task}
 
 APPROVED PLAN:
 ${plan}
-
+${packetBindingPrompt(packet)}
 EXECUTION MANAGER BRIEF:
 ${executionBrief}
 
@@ -256,6 +272,7 @@ export function buildCodeReviewTask(
   task: string,
   plan: string,
   implementation: string,
+  packet?: WorkflowTaskPacket,
 ): string {
   const focus = role === "quality-reviewer"
     ? "Check exact conformance to the approved plan, regression coverage, repository standards, and unsupported completion claims."
@@ -267,7 +284,7 @@ ${task}
 
 APPROVED PLAN:
 ${plan}
-
+${packetBindingPrompt(packet)}
 IMPLEMENTER REPORT:
 ${implementation}
 
@@ -286,7 +303,7 @@ or
 }
 
 export function buildIndependentVerificationTask(task: string, plan: string, implementation: string): string {
-  return `Act as the independent completion gate. Do not modify files.
+  return `Act as the independent completion gate for a legacy packetless plan. Do not modify files.
 
 USER TASK:
 ${task}
@@ -305,12 +322,33 @@ or
 <failed/>`;
 }
 
+export function buildPacketVerificationTask(task: string, plan: string, implementation: string, packet: WorkflowTaskPacket): string {
+  return `Act as the independent completion gate. Do not modify files.
+
+USER TASK:
+${task}
+
+APPROVED PLAN:
+${plan}
+${packetVerificationPrompt(packet)}
+IMPLEMENTER REPORT:
+${implementation}
+
+Inspect the real working tree and repository instructions. Evaluate every acceptance criterion in packet order. Run the narrowest complete canonical checks needed for each required evidence kind. A diff, type check alone, or another agent's claim is not proof. If a relevant check fails, is skipped, or cannot run, mark that criterion failed or skipped.
+
+Return only optional outer whitespace plus exactly one one-line marker and no prose, commands, logs, or legacy markers outside it:
+<workflow-verification>{"schemaVersion":1,"packetId":"${packet.packetId}","planDigest":"${packet.planDigest}","criteria":[{"criterionId":"criterion-id","status":"passed","evidence":[{"kind":"automated-test","summary":"Concise one-line result."}]}]}</workflow-verification>
+
+The JSON must be canonical compact JSON with exact field order. Include every criterion exactly once in packet order. Each criterion has exactly criterionId, status, evidence. Status is passed, failed, or skipped. Evidence entries have exactly kind, summary; kinds are unique, must be required by that criterion, and summaries are trimmed one-line descriptions at most 300 UTF-8 bytes without control characters, U+2028, U+2029, or unpaired surrogates. A passed criterion must include exactly its required evidence kinds; failed or skipped evidence may include only a subset of those kinds. Never use <verified/> or <failed/>.`;
+}
+
 export function buildFixTask(
   task: string,
   plan: string,
   implementation: string,
   reviews: string,
   verification: string,
+  packet?: WorkflowTaskPacket,
 ): string {
   return `Fix the current implementation so it satisfies the approved plan and independent verification gate.
 
@@ -319,7 +357,7 @@ ${task}
 
 APPROVED PLAN:
 ${plan}
-
+${packetBindingPrompt(packet)}
 PRIOR IMPLEMENTER REPORT:
 ${implementation}
 
@@ -380,14 +418,22 @@ export function parsePlanningClearance(output: string): PlanningClearance | unde
   }
 }
 
+function uniqueTerminalVerdict(output: string, markerName: "plan-verdict" | "code-verdict", pattern: RegExp): string | undefined {
+  const normalized = output.toLowerCase();
+  if (normalized.split(`<${markerName}>`).length !== 2 || normalized.split(`</${markerName}>`).length !== 2) return undefined;
+  const matches = [...output.matchAll(pattern)];
+  if (matches.length !== 1) return undefined;
+  const match = matches[0];
+  const end = (match.index ?? 0) + match[0].length;
+  return output.slice(end).trim() ? undefined : match[1];
+}
+
 export function parsePlanVerdict(output: string): PlanVerdict {
-  const match = output.match(/<plan-verdict>\s*(OKAY|REJECT)\s*<\/plan-verdict>/i);
-  return match?.[1]?.toUpperCase() === "OKAY" ? "OKAY" : "REJECT";
+  return uniqueTerminalVerdict(output, "plan-verdict", /<plan-verdict>\s*(OKAY|REJECT)\s*<\/plan-verdict>/g) === "OKAY" ? "OKAY" : "REJECT";
 }
 
 export function parseCodeVerdict(output: string): CodeVerdict {
-  const match = output.match(/<code-verdict>\s*(PASS|CHANGES_REQUIRED|BLOCKED)\s*<\/code-verdict>/i);
-  const value = match?.[1]?.toUpperCase();
+  const value = uniqueTerminalVerdict(output, "code-verdict", /<code-verdict>\s*(PASS|CHANGES_REQUIRED|BLOCKED)\s*<\/code-verdict>/g);
   return value === "PASS" ? "PASS" : value === "BLOCKED" ? "BLOCKED" : "CHANGES_REQUIRED";
 }
 
@@ -399,6 +445,6 @@ export function codeReviewsPass(results: AgentResult[]): boolean {
   return results.length >= 2 && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parseCodeVerdict(result.output) === "PASS");
 }
 
-export function verificationPasses(output: string): boolean {
+export function legacyVerificationPasses(output: string): boolean {
   return /<verified\s*\/>/i.test(output) && !/<failed\s*\/>/i.test(output);
 }

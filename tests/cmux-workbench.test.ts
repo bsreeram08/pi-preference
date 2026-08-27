@@ -57,6 +57,8 @@ describe("cmux workbench bridge", () => {
     expect(decodeWorkflowLifecycleEvent({ ...event, detail: "not allowed" })).toBeUndefined();
     expect(decodeWorkflowLifecycleEvent({ ...event, phase: "custom" })).toBeUndefined();
     expect(decodeWorkflowLifecycleEvent({ ...event, errorCode: "raw failure" })).toBeUndefined();
+    expect(decodeWorkflowLifecycleEvent({ ...event, packet: "packet-sentinel" })).toBeUndefined();
+    expect(decodeWorkflowLifecycleEvent({ ...event, evidence: "evidence-sentinel" })).toBeUndefined();
   });
 
   test("targets the explicit workspace and surface with fixed metadata", async () => {
@@ -129,6 +131,8 @@ describe("cmux workbench bridge", () => {
       detail: secret,
       task: secret,
       summary: secret,
+      packet: `<workflow-task-packet>${secret}</workflow-task-packet>`,
+      evidence: `<workflow-verification>${secret}</workflow-verification>`,
     });
     bus.get(WORKFLOW_LIFECYCLE_EVENT)?.[0]?.(createWorkflowLifecycleEvent("execution", "completed"));
     await handlers.get("agent_settled")?.[0]?.({}, ctx);

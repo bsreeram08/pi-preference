@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+  packetVerificationPasses,
+  validateWorkflowPacketVerification,
+  validateWorkflowTaskPacket,
+  type WorkflowPacketVerification,
+  type WorkflowTaskPacket,
+} from "./workflow-task-packet.ts";
 
 export type WorkflowPlanStatus = "draft" | "approved" | "executing" | "verified" | "blocked" | "cancelled" | "interrupted";
+export type WorkflowVerificationMode = "packet";
 
 export interface WorkflowExecutionState {
   startedAt: string;
@@ -11,6 +19,7 @@ export interface WorkflowExecutionState {
   attempts: number;
   verificationPassed: boolean;
   summary?: string;
+  packetVerification?: WorkflowPacketVerification;
 }
 
 export interface WorkflowPlanState {
@@ -24,6 +33,8 @@ export interface WorkflowPlanState {
   updatedAt: string;
   reviewRounds: number;
   planPath: string;
+  verificationMode?: WorkflowVerificationMode;
+  packet?: WorkflowTaskPacket;
   execution?: WorkflowExecutionState;
 }
 
@@ -111,32 +122,48 @@ function expectedPlanPath(paths: WorkflowPaths, id: string): string {
   return path.join(path.resolve(paths.plans), `${id}.md`);
 }
 
-function validExecution(value: unknown): value is WorkflowExecutionState {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["startedAt", "completedAt", "attempts", "verificationPassed", "summary"])) return false;
-  return isIso(value.startedAt)
-    && (value.completedAt === undefined || isIso(value.completedAt))
-    && isFiniteInteger(value.attempts)
-    && typeof value.verificationPassed === "boolean"
-    && (value.summary === undefined || typeof value.summary === "string");
+function validExecution(value: unknown, packet: WorkflowTaskPacket | undefined): value is WorkflowExecutionState {
+  if (!isRecord(value) || !hasOnlyKeys(value, ["startedAt", "completedAt", "attempts", "verificationPassed", "summary", "packetVerification"])) return false;
+  if (!isIso(value.startedAt)
+    || (value.completedAt !== undefined && (!isIso(value.completedAt) || Date.parse(value.completedAt) < Date.parse(value.startedAt)))
+    || !isFiniteInteger(value.attempts)
+    || typeof value.verificationPassed !== "boolean"
+    || (value.summary !== undefined && typeof value.summary !== "string")) return false;
+  if (value.packetVerification === undefined) return true;
+  return packet !== undefined && validateWorkflowPacketVerification(value.packetVerification, packet);
 }
 
 function validateState(value: unknown, paths: WorkflowPaths): value is WorkflowPlanState {
   if (!isRecord(value) || !hasOnlyKeys(value, [
-    "version", "id", "task", "status", "plan", "interviewNotes", "createdAt", "updatedAt", "reviewRounds", "planPath", "execution",
+    "version", "id", "task", "status", "plan", "interviewNotes", "createdAt", "updatedAt", "reviewRounds", "planPath", "verificationMode", "packet", "execution",
   ])) return false;
   if (value.version !== 1 || typeof value.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value.id) || value.id.includes("..")) return false;
   if (typeof value.task !== "string" || !value.task.trim() || typeof value.plan !== "string" || !value.plan.trim()) return false;
   if (typeof value.interviewNotes !== "string" || typeof value.status !== "string" || !STATUSES.has(value.status as WorkflowPlanStatus)) return false;
   if (!isIso(value.createdAt) || !isIso(value.updatedAt) || !isFiniteInteger(value.reviewRounds)) return false;
   if (typeof value.planPath !== "string" || path.resolve(value.planPath) !== expectedPlanPath(paths, value.id)) return false;
-  if (value.execution !== undefined && !validExecution(value.execution)) return false;
+  if (value.verificationMode !== undefined && value.verificationMode !== "packet") return false;
+  const packetMode = value.verificationMode === "packet";
+  if (!packetMode && value.packet !== undefined) return false;
+  if (value.packet !== undefined && !validateWorkflowTaskPacket(value.packet, value.plan)) return false;
+  const packet = value.packet as WorkflowTaskPacket | undefined;
+  if (value.execution !== undefined && !validExecution(value.execution, packet)) return false;
 
   const status = value.status as WorkflowPlanStatus;
   const execution = value.execution as WorkflowExecutionState | undefined;
+  const requiresBoundPacket = status === "approved" || execution !== undefined;
+  if (packetMode && requiresBoundPacket && packet === undefined) return false;
+  if (!packetMode && requiresBoundPacket && value.plan.includes("<workflow-task-packet>")) return false;
   if ((status === "executing" || status === "verified") && !execution) return false;
   if ((status === "draft" || status === "approved") && execution !== undefined) return false;
+  if (status === "executing" && execution?.completedAt !== undefined) return false;
+  if (["verified", "blocked", "cancelled", "interrupted"].includes(status) && execution !== undefined && execution.completedAt === undefined) return false;
+  if (status === "draft" && packet !== undefined) return false;
   if (status === "verified" && (!execution?.verificationPassed || !execution.completedAt)) return false;
   if (execution?.verificationPassed && status !== "verified") return false;
+  if (packet === undefined && execution?.packetVerification !== undefined) return false;
+  if (packet !== undefined && status === "verified" && (!execution?.packetVerification || !packetVerificationPasses(execution.packetVerification))) return false;
+  if (packet !== undefined && execution?.verificationPassed && (!execution.packetVerification || !packetVerificationPasses(execution.packetVerification))) return false;
   return true;
 }
 
