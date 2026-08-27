@@ -13,7 +13,7 @@ export default function (pi: ExtensionAPI) {
         const summary = `${skills} skills · ${prompts} prompts · ${pi.getActiveTools().length} tools`;
 
         const art = [
-          ["█████", "     ", "████ ████  █████ █████"],
+          ["█████", "     ", "████  ████  █████ █████"],
           [" █ █", "      ", "█     █   █ █     █"],
           [" █ █", "      ", " ███  ████  ████  ████"],
           [" █ █", "      ", "    █ █  █  █     █"],
