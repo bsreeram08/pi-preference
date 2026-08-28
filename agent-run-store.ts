@@ -46,6 +46,7 @@ export interface AgentRunRecord {
   readonly taskDigest: string;
   readonly systemPromptDigest: string;
   readonly trustedCodeDigest: string;
+  readonly runtime?: "headless-rpc" | "interactive-tui";
   readonly runtimePath?: string;
   readonly runtimeDigest?: string;
   readonly tools: readonly string[];
@@ -78,7 +79,7 @@ export interface AgentRunPaths {
 
 const RECORD_KEYS = new Set([
   "version", "runId", "agentId", "title", "projectRoot", "memoryProjectRoot", "cwd", "groupId", "status",
-  "createdAt", "updatedAt", "sequence", "taskDigest", "systemPromptDigest", "trustedCodeDigest", "runtimePath", "runtimeDigest",
+  "createdAt", "updatedAt", "sequence", "taskDigest", "systemPromptDigest", "trustedCodeDigest", "runtime", "runtimePath", "runtimeDigest",
   "tools", "readOnly", "allowBash", "model", "thinking", "budget", "sessionDir", "sessionFile",
   "sessionId", "pid", "processStartIdentity", "question", "questionUsed", "outputDigest", "exitCode", "errorCode", "checksum",
 ]);
@@ -159,6 +160,7 @@ export function isAgentRunRecord(value: unknown): value is AgentRunRecord {
     || typeof item.taskDigest !== "string" || !/^[0-9a-f]{64}$/.test(item.taskDigest)
     || typeof item.systemPromptDigest !== "string" || !/^[0-9a-f]{64}$/.test(item.systemPromptDigest)
     || typeof item.trustedCodeDigest !== "string" || !/^[0-9a-f]{64}$/.test(item.trustedCodeDigest)
+    || (item.runtime !== undefined && item.runtime !== "headless-rpc" && item.runtime !== "interactive-tui")
     || (item.runtimePath !== undefined && !canonicalAbsolute(item.runtimePath))
     || (item.runtimeDigest !== undefined && (typeof item.runtimeDigest !== "string" || !/^[0-9a-f]{64}$/.test(item.runtimeDigest)))
     || !Array.isArray(item.tools) || item.tools.length > 64 || item.tools.some((tool) => typeof tool !== "string" || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(tool))

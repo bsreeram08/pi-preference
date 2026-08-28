@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AgentRpcConnection, AgentRpcProtocolError, MAX_AGENT_RPC_STDERR_BYTES, type AgentRpcEvent, type RpcResponse } from "./agent-rpc.ts";
 import { AgentRunStore, digestAgentRunText, type AgentRunPaths, type AgentRunQuestion, type AgentRunRecord, type AgentRunStatus } from "./agent-run-store.ts";
-import type { AgentRunViewer } from "./agent-cmux-viewer.ts";
+import { CHILD_BRIDGE_EXTENSION_PATH, type AgentSessionHost } from "./agent-cmux-session.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { inspectProcessStart } from "./exclusive-lease.ts";
 import type { AgentResult, AgentSpec } from "./types.ts";
@@ -16,7 +16,8 @@ import type { AgentResult, AgentSpec } from "./types.ts";
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const CHILD_TOOLS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-tools.ts");
 const TRUSTED_CHILD_FILES = [
-  "child-tools.ts", "memory-access.ts", "memory-store.ts", "memory.ts", "research-tools.ts", "research-types.ts", "research-browser.mjs",
+  "agent-child-bridge.ts", "agent-cmux-bridge.mjs", "agent-cmux-session.ts", "child-tools.ts",
+  "memory-access.ts", "memory-store.ts", "memory.ts", "research-tools.ts", "research-types.ts", "research-browser.mjs",
 ];
 const TERMINAL_STATUSES = new Set<AgentRunStatus>(["completed", "failed", "cancelled", "interrupted", "orphaned"]);
 const MAX_QUESTION_BYTES = 4_000;
@@ -66,12 +67,13 @@ export interface AgentRunStatusView {
 export interface AgentRunManagerOptions {
   readonly dashboard?: WorkbenchDashboardController;
   readonly store?: AgentRunStore;
-  readonly viewer?: AgentRunViewer;
+  readonly sessionHost?: AgentSessionHost;
   readonly spawnProcess?: typeof spawn;
   readonly now?: () => Date;
   readonly uuid?: () => string;
   readonly invocation?: (args: string[]) => { command: string; args: string[] };
   readonly environment?: NodeJS.ProcessEnv;
+  readonly defaultModel?: string;
   readonly terminationGraceMs?: number;
   readonly killGraceMs?: number;
 }
@@ -112,14 +114,16 @@ interface ActiveRun {
   assistantTurns: number;
   toolCalls: number;
   synthesisQueued: boolean;
+  readonly interactive: boolean;
+  readonly routeModel?: string;
   terminationTimer?: NodeJS.Timeout;
   killTimer?: NodeJS.Timeout;
 }
 
-function splitModel(value: string | undefined): { model?: string; thinking?: string } {
+function splitModel(value: string | undefined): { model?: string; thinking?: string; identity?: string } {
   if (!value) return {};
   const match = value.match(/^(.*):(off|minimal|low|medium|high|xhigh|max)$/);
-  return match ? { model: value, thinking: match[2] } : { model: value };
+  return match ? { model: value, thinking: match[2], identity: match[1] } : { model: value, identity: value };
 }
 
 function truncate(text: string): string {
@@ -183,14 +187,9 @@ function signalProcessGroup(child: ChildProcessWithoutNullStreams | undefined, s
   try { child.kill(signal); } catch { /* The process may already have exited. */ }
 }
 
-function defaultInvocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtualScript && fsSync.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...args] };
-  }
-  const executable = path.basename(process.execPath).toLowerCase();
-  if (!/^(node|bun)(\.exe)?$/.test(executable)) return { command: process.execPath, args };
+export function defaultAgentInvocation(args: string[], executablePath = process.execPath): { command: string; args: string[] } {
+  const executable = path.basename(executablePath).toLowerCase();
+  if (!/^(node|bun)(\.exe)?$/.test(executable)) return { command: executablePath, args };
   return { command: "pi", args };
 }
 
@@ -203,7 +202,7 @@ function sanitizePath(value: string | undefined): string | undefined {
 export function buildAgentChildEnvironment(
   source: NodeJS.ProcessEnv,
   paths: AgentRunPaths,
-  fields: { runId: string; agentId: string; projectRoot: string; memoryProjectRoot: string; toolBudget?: number; allowParentQuestions: boolean },
+  fields: { runId: string; agentId: string; projectRoot: string; memoryProjectRoot: string; toolBudget?: number; allowParentQuestions: boolean; expectedModel?: string; expectedThinking?: string },
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     HOME: paths.temporaryHome,
@@ -218,7 +217,11 @@ export function buildAgentChildEnvironment(
     PI_WORKBENCH_MEMORY_PROJECT_ROOT: fields.memoryProjectRoot,
     PI_WORKBENCH_TOOL_BUDGET: fields.toolBudget ? String(fields.toolBudget) : "",
     PI_WORKBENCH_ALLOW_PARENT_QUESTION: fields.allowParentQuestions ? "1" : "0",
+    PI_WORKBENCH_EXPECTED_MODEL: fields.expectedModel ?? "",
+    PI_WORKBENCH_EXPECTED_THINKING: fields.expectedThinking ?? "",
   };
+  const term = source.TERM;
+  if (term && /^[a-zA-Z0-9_.+-]{1,64}$/.test(term)) environment.TERM = term;
   const safePath = sanitizePath(source.PATH);
   if (safePath) environment.PATH = safePath;
   for (const key of ["LANG", "LC_ALL", "LC_CTYPE"] as const) {
@@ -321,12 +324,13 @@ export class AgentRunManager {
   readonly store: AgentRunStore;
   private readonly active = new Map<string, ActiveRun>();
   private readonly recent = new Map<string, AgentRunRecord>();
-  private readonly viewer?: AgentRunViewer;
+  private readonly sessionHost?: AgentSessionHost;
   private readonly spawnProcess: typeof spawn;
   private readonly now: () => Date;
   private readonly uuid: () => string;
   private readonly invocation: (args: string[]) => { command: string; args: string[] };
   private readonly environment: NodeJS.ProcessEnv;
+  private defaultModel?: string;
   private readonly terminationGraceMs: number;
   private readonly killGraceMs: number;
   private dashboard?: WorkbenchDashboardController;
@@ -334,18 +338,23 @@ export class AgentRunManager {
   constructor(options: AgentRunManagerOptions = {}) {
     this.dashboard = options.dashboard;
     this.store = options.store ?? new AgentRunStore();
-    this.viewer = options.viewer;
+    this.sessionHost = options.sessionHost;
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.now = options.now ?? (() => new Date());
     this.uuid = options.uuid ?? randomUUID;
-    this.invocation = options.invocation ?? defaultInvocation;
+    this.invocation = options.invocation ?? defaultAgentInvocation;
     this.environment = options.environment ?? process.env;
+    this.defaultModel = options.defaultModel;
     this.terminationGraceMs = options.terminationGraceMs ?? 1_500;
     this.killGraceMs = options.killGraceMs ?? 5_000;
   }
 
   attachDashboard(dashboard: WorkbenchDashboardController): void {
     this.dashboard = dashboard;
+  }
+
+  setDefaultModel(model: string | undefined): void {
+    this.defaultModel = model?.trim() || undefined;
   }
 
   async start(request: AgentRunRequest): Promise<AgentRunHandle> {
@@ -356,7 +365,10 @@ export class AgentRunManager {
     const paths = await this.store.prepare(projectRoot, runId);
     await this.store.writeSystemPrompt(paths, request.systemPrompt);
     const tools = requestedTools(request.agent);
-    const model = splitModel(request.agent.model);
+    const interactive = this.sessionHost?.interactive === true;
+    const routeModel = request.agent.model ?? this.defaultModel;
+    if (interactive && !routeModel) throw new Error("Interactive Workbench agents require a resolved model route before launch.");
+    const model = splitModel(routeModel);
     const timestamp = this.now().toISOString();
     const baseRecord = await this.store.save(paths, {
       version: 1,
@@ -374,6 +386,7 @@ export class AgentRunManager {
       taskDigest: digestAgentRunText(request.task),
       systemPromptDigest: digestAgentRunText(request.systemPrompt),
       trustedCodeDigest: await trustedCodeDigest(),
+      runtime: interactive ? "interactive-tui" : "headless-rpc",
       tools,
       readOnly: request.agent.readOnly,
       allowBash: request.agent.allowBash === true,
@@ -388,29 +401,52 @@ export class AgentRunManager {
     let reject!: (error: Error) => void;
     const completion = new Promise<AgentResult>((ok, fail) => { resolve = ok; reject = fail; });
     const args = [
-      "--mode", "rpc",
+      ...(interactive ? [] : ["--mode", "rpc"]),
       "--session-dir", paths.sessions,
+      ...(interactive ? ["--session-id", runId] : []),
       "--no-extensions", "--extension", CHILD_TOOLS_PATH,
+      ...(interactive ? ["--extension", CHILD_BRIDGE_EXTENSION_PATH] : []),
       "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-themes", "--no-approve",
       "--append-system-prompt", paths.systemPrompt,
-      ...(request.agent.model ? ["--model", request.agent.model] : []),
+      ...(routeModel ? ["--model", routeModel] : []),
       "--tools", tools.join(","),
     ];
-    const invocation = this.invocation(args);
-    const runtime = await runtimeIdentity(invocation, this.environment);
-    const child = this.spawnProcess(invocation.command, invocation.args, {
+    const piInvocation = this.invocation(args);
+    const childEnvironment = buildAgentChildEnvironment(this.environment, paths, {
+      runId,
+      agentId: request.agent.id,
+      projectRoot,
+      memoryProjectRoot,
+      toolBudget: request.runContext?.budget?.tools,
+      allowParentQuestions: request.runContext?.allowParentQuestions === true,
+      expectedModel: model.identity,
+      expectedThinking: model.thinking,
+    });
+    const runtime = await runtimeIdentity(piInvocation, childEnvironment);
+    let launch: { invocation: { command: string; args: readonly string[] }; environment: NodeJS.ProcessEnv };
+    try {
+      launch = this.sessionHost
+        ? await this.sessionHost.prepare({ runId, agentId: request.agent.id, paths, projectRoot, piInvocation, childEnvironment })
+        : { invocation: piInvocation, environment: childEnvironment };
+    } catch (error) {
+      const { checksum: _checksum, ...current } = baseRecord;
+      const failed = await this.store.save(paths, {
+        ...current,
+        status: "failed",
+        updatedAt: this.now().toISOString(),
+        sequence: current.sequence + 1,
+        exitCode: 1,
+        errorCode: "interactive-launch-failed",
+      });
+      this.recent.set(runId, failed);
+      throw error;
+    }
+    const child = this.spawnProcess(launch.invocation.command, [...launch.invocation.args], {
       cwd: projectRoot,
       shell: false,
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
-      env: buildAgentChildEnvironment(this.environment, paths, {
-        runId,
-        agentId: request.agent.id,
-        projectRoot,
-        memoryProjectRoot,
-        toolBudget: request.runContext?.budget?.tools,
-        allowParentQuestions: request.runContext?.allowParentQuestions === true,
-      }),
+      env: launch.environment,
     });
 
     const earlyEvents: AgentRpcEvent[] = [];
@@ -428,7 +464,7 @@ export class AgentRunManager {
       record: baseRecord, persistChain: Promise.resolve(), stderr: "", latestAssistant: "", currentAssistant: "",
       questionAdmissionLocked: false, answerInFlight: false, loadoutVerified: false, loadoutReady, resolveLoadout, rejectLoadout,
       promptAccepted: false, settledSeen: false, finalHandshakeDone: false, cancellationRequested: false,
-      terminationRequested: false, closed: false, assistantTurns: 0, toolCalls: 0, synthesisQueued: false,
+      terminationRequested: false, closed: false, assistantTurns: 0, toolCalls: 0, synthesisQueued: false, interactive, routeModel,
     };
     this.active.set(runId, active);
     child.stderr.on("data", (chunk: Buffer) => { active.stderr = boundedAppend(active.stderr, chunk.toString(), MAX_AGENT_RPC_STDERR_BYTES); });
@@ -439,7 +475,7 @@ export class AgentRunManager {
     const groupId = request.runContext?.groupId ?? "agents";
     const groupTitle = request.runContext?.groupTitle ?? "Agents";
     dashboard?.addJob(runId, request.agent.title, groupId, groupTitle);
-    dashboard?.updateJob(runId, { status: "starting", latestActivity: "Starting persistent agent" });
+    dashboard?.updateJob(runId, { status: "starting", latestActivity: interactive ? "Starting interactive Pi TUI" : "Starting persistent agent" });
     dashboard?.setControl(runId, {
       steer: (message) => { void this.message(runId, message, "steer"); },
       pause: () => this.pause(runId),
@@ -449,16 +485,6 @@ export class AgentRunManager {
       answer: (questionId, value) => { void this.answer(runId, questionId, value); },
     });
     request.progress?.(`${request.agent.title} started`);
-    try {
-      this.viewer?.start({
-        runId,
-        agentId: request.agent.id,
-        viewerFile: path.join(paths.root, "agent-view.html"),
-        projectName: path.basename(memoryProjectRoot),
-        status: active.record.status,
-        ...(active.record.model ? { model: active.record.model } : {}),
-      });
-    } catch { /* Optional cmux viewing must never affect execution. */ }
     attached = true;
     for (const event of earlyEvents) this.onEvent(runId, event);
     if (earlyProtocolFailure) this.onProtocolFailure(runId, earlyProtocolFailure);
@@ -531,7 +557,6 @@ export class AgentRunManager {
       await this.persist(active, { question: { ...question, answeredAt: this.now().toISOString() } });
       active.rpc.notify({ type: "extension_ui_response", id: question.rpcRequestId, value: value.trim() });
       await this.persist(active, { question: undefined });
-      this.projectViewer(active);
       const dashboard = active.request.runContext?.dashboard ?? this.dashboard;
       dashboard?.updateJob(runId, { status: "running", latestActivity: "Parent answer delivered", question: undefined });
     } catch (error) {
@@ -569,6 +594,10 @@ export class AgentRunManager {
   pause(runId: string): void {
     const active = this.active.get(runId);
     if (!active || active.closed || active.cancellationRequested) return;
+    if (active.interactive) {
+      (active.request.runContext?.dashboard ?? this.dashboard)?.updateJob(runId, { status: "running", latestActivity: "Pause unavailable for interactive Pi TUI" });
+      return;
+    }
     signalProcessGroup(active.child, "SIGSTOP");
     (active.request.runContext?.dashboard ?? this.dashboard)?.updateJob(runId, { status: "paused", latestActivity: "Process suspended" });
   }
@@ -576,6 +605,10 @@ export class AgentRunManager {
   resume(runId: string): void {
     const active = this.active.get(runId);
     if (!active || active.closed || active.cancellationRequested) return;
+    if (active.interactive) {
+      (active.request.runContext?.dashboard ?? this.dashboard)?.updateJob(runId, { status: "running", latestActivity: "Resume unavailable for interactive Pi TUI" });
+      return;
+    }
     signalProcessGroup(active.child, "SIGCONT");
     (active.request.runContext?.dashboard ?? this.dashboard)?.updateJob(runId, { status: "running", latestActivity: "Process resumed" });
   }
@@ -585,7 +618,7 @@ export class AgentRunManager {
     const dashboard = active?.request.runContext?.dashboard ?? this.dashboard;
     dashboard?.state.selectJob(runId);
     dashboard?.focusCards();
-    try { this.viewer?.focus(runId); } catch { /* Optional viewer failure is non-authoritative. */ }
+    try { this.sessionHost?.focus(runId); } catch { /* Presentation focus is non-authoritative. */ }
   }
 
   async status(projectRoot: string, runId?: string): Promise<AgentRunStatusView[]> {
@@ -647,21 +680,6 @@ export class AgentRunManager {
 
   private async transition(active: ActiveRun, status: AgentRunStatus, patch: Partial<Omit<AgentRunRecord, "checksum" | "version" | "runId">> = {}): Promise<void> {
     await this.persist(active, { ...patch, status });
-    this.projectViewer(active);
-  }
-
-  private projectViewer(active: ActiveRun): void {
-    try {
-      this.viewer?.update({
-        runId: active.record.runId,
-        status: active.record.status,
-        output: truncate(active.validatedFinalText || active.latestAssistant || active.currentAssistant),
-        question: active.record.question?.question ?? "",
-        turns: active.assistantTurns,
-        tools: active.toolCalls,
-        errorCode: active.record.errorCode ?? "",
-      });
-    } catch { /* Optional viewer failure is non-authoritative. */ }
   }
 
   private async persist(active: ActiveRun, patch: Partial<Omit<AgentRunRecord, "checksum" | "version" | "runId">>): Promise<void> {
@@ -702,7 +720,6 @@ export class AgentRunManager {
       const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
       if (delta?.type === "text_delta" && typeof delta.delta === "string") active.currentAssistant += delta.delta;
       dashboard?.updateJob(runId, { status: "running", output: truncate(active.currentAssistant), latestActivity: "Generating response" });
-      this.projectViewer(active);
       return;
     }
     if (event.type === "message_end" && event.message) {
@@ -719,7 +736,6 @@ export class AgentRunManager {
         if (typeof message.stopReason === "string") active.lastStopReason = message.stopReason;
         this.enforceBudget(active);
       }
-      this.projectViewer(active);
       return;
     }
     if (event.type === "tool_execution_start") {
@@ -742,7 +758,6 @@ export class AgentRunManager {
         tests: [...new Set([...(job?.tests ?? []), ...discovered.tests])],
       });
       this.enforceBudget(active);
-      this.projectViewer(active);
       return;
     }
     if (event.type === "tool_execution_update") {
@@ -760,7 +775,6 @@ export class AgentRunManager {
           void this.transition(active, "running", { question: undefined }).catch((error) => this.onProtocolFailure(runId, new AgentRpcProtocolError("record_write_failed", error instanceof Error ? error.message : String(error))));
         }
       }
-      this.projectViewer(active);
       return;
     }
     if (event.type === "queue_update") {
@@ -781,10 +795,18 @@ export class AgentRunManager {
       return;
     }
     if (event.type === "agent_settled") {
+      const eventStopReason = typeof event.stopReason === "string" ? event.stopReason : active.lastStopReason;
+      if (eventStopReason === "aborted" && active.interactive && !active.cancellationRequested) {
+        active.lastStopReason = undefined;
+        active.currentAssistant = "";
+        void this.transition(active, "running").catch((error) => this.onProtocolFailure(runId, new AgentRpcProtocolError("record_write_failed", String(error))));
+        dashboard?.updateJob(runId, { status: "running", latestActivity: "Interactive Pi TUI waiting for input" });
+        return;
+      }
       if (active.settledSeen) { this.onProtocolFailure(runId, new AgentRpcProtocolError("duplicate_settled", "Agent emitted agent_settled more than once.")); return; }
       active.settledSeen = true;
-      active.settledStopReason = active.lastStopReason;
-      void this.finalHandshake(active);
+      active.settledStopReason = eventStopReason;
+      if (!active.cancellationRequested) void this.finalHandshake(active);
     }
   }
 
@@ -798,15 +820,24 @@ export class AgentRunManager {
         const payload = JSON.parse(event.statusText) as unknown;
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new AgentRpcProtocolError("invalid_loadout", "Child loadout handshake is not an object.");
         const value = payload as Record<string, unknown>;
-        if (Object.keys(value).some((key) => !["version", "runId", "activeTools"].includes(key))
+        if (Object.keys(value).some((key) => !["version", "runId", "activeTools", "model", "thinking"].includes(key))
           || value.version !== 1 || value.runId !== active.record.runId
-          || !Array.isArray(value.activeTools) || value.activeTools.some((tool) => typeof tool !== "string")) {
+          || !Array.isArray(value.activeTools) || value.activeTools.some((tool) => typeof tool !== "string")
+          || (value.model !== undefined && typeof value.model !== "string")
+          || (value.thinking !== undefined && typeof value.thinking !== "string")) {
           throw new AgentRpcProtocolError("invalid_loadout", "Child loadout handshake shape or run identity is invalid.");
         }
         const actual = [...new Set(value.activeTools as string[])].sort();
         const expected = [...active.record.tools].sort();
         if (JSON.stringify(actual) !== JSON.stringify(expected)) {
           throw new AgentRpcProtocolError("loadout_mismatch", "Child active tools do not match the persisted exact loadout.");
+        }
+        if (active.interactive) {
+          const expectedRoute = splitModel(active.routeModel);
+          if (!expectedRoute.identity || value.model !== expectedRoute.identity
+            || (expectedRoute.thinking !== undefined && value.thinking !== expectedRoute.thinking)) {
+            throw new AgentRpcProtocolError("loadout_mismatch", "Interactive child model or thinking level does not match the requested route.");
+          }
         }
         active.loadoutVerified = true;
         active.resolveLoadout();
@@ -886,7 +917,6 @@ export class AgentRunManager {
       active.validatedFinalText = text;
       active.latestAssistant = text;
       await this.persist(active, { sessionFile, sessionId });
-      this.projectViewer(active);
       active.finalHandshakeDone = true;
       active.rpc.closeInput();
     } catch (error) {

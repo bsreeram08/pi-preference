@@ -3,7 +3,7 @@ import { constants as fsConstants, realpathSync, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { acquireUpdateExclusiveLease, type ExclusiveLease } from "./exclusive-lease.ts";
 import type { Exec, ExecResult } from "./types.ts";
 
@@ -65,7 +65,7 @@ const CONFIG_PATHS = [
 ] as const;
 
 export type UpdateProfile = "default" | "full";
-export type UpdateChannel = "stable" | "main-bootstrap";
+export type UpdateChannel = "stable" | "main" | "main-bootstrap";
 export type UpdateCategory = "blocked" | "no-update" | "update-available" | "updated";
 export type UpdateCode =
   | "READY"
@@ -82,7 +82,6 @@ export type UpdateCode =
   | "RELEASES_MALFORMED"
   | "RELEASES_OVERSIZE"
   | "AUDIT_INVALID"
-  | "BOOTSTRAP_CONSUMED"
   | "CANDIDATE_INVALID"
   | "CANDIDATE_CHANGED"
   | "LOCK_BLOCKED"
@@ -293,7 +292,7 @@ function parseReleaseCandidate(value: unknown): Candidate {
       stable.push(item.tag_name);
     }
   }
-  if (stable.length === 0) return { sourceRef: MAIN_REF, label: "main", channel: "main-bootstrap" };
+  if (stable.length === 0) return { sourceRef: MAIN_REF, label: "main", channel: "main" };
   stable.sort(compareTags);
   const tag = stable.at(-1)!;
   return { sourceRef: `refs/tags/${tag}`, label: tag, channel: "stable" };
@@ -473,7 +472,7 @@ function parseAuditLine(line: string): ParsedAuditLine {
     || typeof record.candidateCommit !== "string"
     || !COMMIT.test(record.candidateCommit)
     || (record.profile !== "default" && record.profile !== "full")
-    || (record.channel !== "stable" && record.channel !== "main-bootstrap")
+    || (record.channel !== "stable" && record.channel !== "main" && record.channel !== "main-bootstrap")
     || typeof record.tag !== "string"
     || (record.channel === "stable" ? !STABLE_TAG.test(record.tag) : record.tag !== "main")
     || (record.outcome !== "SUCCESS" && record.outcome !== "ROLLED_BACK" && record.outcome !== "ROLLBACK_INCOMPLETE")
@@ -953,11 +952,11 @@ export class WorkbenchUpdater {
     return { currentCommit, currentVersion, profile, submodules };
   }
 
-  private async mainBootstrapConsumed(): Promise<boolean> {
+  private async validateMainAuditState(): Promise<void> {
     const auditPath = path.join(this.agentDir, "update", "pi-workbench", "audit.jsonl");
     await assertSafeParents(this.agentDir, auditPath);
     const existing = await fs.lstat(auditPath).catch((error) => isMissing(error) ? undefined : Promise.reject(error));
-    if (!existing) return false;
+    if (!existing) return;
     if (!existing.isFile() || existing.isSymbolicLink() || existing.size === 0 || existing.size > MAX_AUDIT_BYTES) {
       throw new UpdateFailure("AUDIT_INVALID");
     }
@@ -987,13 +986,10 @@ export class WorkbenchUpdater {
       if (!text.endsWith("\n") || Buffer.from(text, "utf8").length !== offset) throw new UpdateFailure("AUDIT_INVALID");
       const lines = text.slice(0, -1).split("\n");
       if (lines.length === 0 || lines.length > MAX_AUDIT_LINES) throw new UpdateFailure("AUDIT_INVALID");
-      const terminalByBackup = new Map<string, Extract<ParsedAuditLine, { kind: "outcome" }>>();
       for (const line of lines) {
         if (!line || byteLength(line) > MAX_AUDIT_LINE_BYTES) throw new UpdateFailure("AUDIT_INVALID");
-        const parsed = parseAuditLine(line);
-        if (parsed.kind === "outcome") terminalByBackup.set(parsed.backupId, parsed);
+        parseAuditLine(line);
       }
-      return [...terminalByBackup.values()].some((record) => record.outcome === "SUCCESS" && record.channel === "main-bootstrap");
     } finally {
       await handle.close();
     }
@@ -1054,9 +1050,7 @@ export class WorkbenchUpdater {
       };
       const candidate = await this.releaseCandidate();
       partial = { ...partial, candidate: candidate.label, channel: candidate.channel, sourceRef: candidate.sourceRef };
-      if (candidate.channel === "main-bootstrap" && await this.mainBootstrapConsumed()) {
-        return { category: "no-update", code: "BOOTSTRAP_CONSUMED", ...partial };
-      }
+      if (candidate.channel === "main") await this.validateMainAuditState();
       const candidateCommit = await this.fetchCandidate(candidate);
       partial = { ...partial, candidateCommit };
       await this.validateGitmodules(candidateCommit);
@@ -1725,9 +1719,6 @@ export function formatUpdateStatus(status: WorkbenchUpdateStatus): string {
   if (status.code === "PROFILE_REQUIRED") {
     lines.push("Action: rerun ./install.sh or ./install.sh --full once for the desired profile, then retry.");
   }
-  if (status.code === "BOOTSTRAP_CONSUMED") {
-    lines.push("Action: wait for a stable release; the one-time main bootstrap has already succeeded.");
-  }
   if (status.code === "ROLLBACK_INCOMPLETE") {
     lines.push("Action: inspect the preserved update backup before another attempt.");
   }
@@ -1751,13 +1742,63 @@ export interface RegisterUpdateOptions {
   readonly updater?: WorkbenchUpdateRunner;
 }
 
-function notifyStatus(ctx: ExtensionCommandContext, status: WorkbenchUpdateStatus): void {
+type UpdateUiContext = ExtensionCommandContext | ExtensionContext;
+
+function notifyStatus(ctx: UpdateUiContext, status: WorkbenchUpdateStatus): void {
   const level = status.category === "blocked" ? "error" : status.category === "update-available" ? "warning" : "info";
   ctx.ui.notify(formatUpdateStatus(status), level);
 }
 
 export function registerWorkbenchUpdate(pi: ExtensionAPI, options: RegisterUpdateOptions): void {
   const updater = options.updater ?? new WorkbenchUpdater(options);
+  const promptedCandidates = new Set<string>();
+  let startupCheckActive = false;
+  let sessionGeneration = 0;
+
+  const applyAndReload = async (ctx: UpdateUiContext): Promise<void> => {
+    const result = await updater.apply({
+      confirm: (title, message) => ctx.ui.confirm(title, message),
+      notify: (message, level) => ctx.ui.notify(message, level),
+    });
+    notifyStatus(ctx, result);
+    if (!result.reload) return;
+    try {
+      const reload = (ctx as unknown as { reload?: () => Promise<void> }).reload;
+      if (typeof reload !== "function") throw new Error("Live reload is unavailable in this context.");
+      await reload.call(ctx);
+    } catch {
+      ctx.ui.notify(
+        "Pi Workbench was installed on disk, but the live runtime did not reload. Run /reload or restart Pi before using the update.",
+        "warning",
+      );
+    }
+  };
+
+  pi.on?.("session_start", (_event, ctx) => {
+    const generation = ++sessionGeneration;
+    if (!ctx.hasUI || process.env.PI_OFFLINE === "1" || startupCheckActive) return;
+    startupCheckActive = true;
+    void (async () => {
+      try {
+        const status = await updater.status();
+        if (generation !== sessionGeneration || status.category !== "update-available") return;
+        const candidateKey = status.candidateCommit ?? `${status.channel ?? "unknown"}:${status.candidate ?? "unknown"}`;
+        if (promptedCandidates.has(candidateKey)) return;
+        promptedCandidates.add(candidateKey);
+        if (generation !== sessionGeneration) return;
+        await applyAndReload(ctx);
+      } catch {
+        // Startup update discovery is optional and must never block or degrade launch.
+      } finally {
+        if (generation === sessionGeneration) startupCheckActive = false;
+      }
+    })();
+  });
+  pi.on?.("session_shutdown", () => {
+    sessionGeneration += 1;
+    startupCheckActive = false;
+  });
+
   pi.registerCommand("workbench-update", {
     description: "Show or explicitly apply a trusted Pi Workbench update",
     getArgumentCompletions(prefix) {
@@ -1777,20 +1818,7 @@ export function registerWorkbenchUpdate(pi: ExtensionAPI, options: RegisterUpdat
         notifyStatus(ctx, { category: "blocked", code: "CONFIRMATION_REQUIRED" });
         return;
       }
-      const result = await updater.apply({
-        confirm: (title, message) => ctx.ui.confirm(title, message),
-        notify: (message, level) => ctx.ui.notify(message, level),
-      });
-      notifyStatus(ctx, result);
-      if (!result.reload) return;
-      try {
-        await ctx.reload();
-      } catch {
-        ctx.ui.notify(
-          "Pi Workbench was installed on disk, but the live runtime did not reload. Run /reload or restart Pi before using the update.",
-          "warning",
-        );
-      }
+      await applyAndReload(ctx);
       return;
     },
   });

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AgentRunManager, buildAgentChildEnvironment } from "../agent-run-manager.ts";
+import { AgentRunManager, buildAgentChildEnvironment, defaultAgentInvocation } from "../agent-run-manager.ts";
 import { AgentRunStore, digestAgentRunText } from "../agent-run-store.ts";
 import type { AgentSpec } from "../types.ts";
 
@@ -20,7 +20,6 @@ async function setup(
   mode = "complete",
   delay = 0,
   storeFactory: (root: string) => AgentRunStore = (root) => new AgentRunStore(root),
-  viewer?: { start(input: unknown): void; update(input: unknown): void; focus(runId: string): void },
 ) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agent-run-manager-")));
   const project = path.join(root, "project");
@@ -29,7 +28,6 @@ async function setup(
   await fs.mkdir(project);
   const manager = new AgentRunManager({
     store: storeFactory(records),
-    viewer,
     invocation: (args) => ({
       command: process.execPath,
       args: [FIXTURE, ...args, "--fake-mode", mode, "--fake-delay", String(delay), "--env-output", envOutput],
@@ -61,6 +59,12 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Pr
 }
 
 describe("AgentRunManager", () => {
+  test("launches the Pi CLI instead of reusing arbitrary Node or Bun embedding scripts", () => {
+    expect(defaultAgentInvocation(["--mode", "rpc"], "/usr/bin/node")).toEqual({ command: "pi", args: ["--mode", "rpc"] });
+    expect(defaultAgentInvocation(["--mode", "rpc"], "/opt/homebrew/bin/bun")).toEqual({ command: "pi", args: ["--mode", "rpc"] });
+    expect(defaultAgentInvocation(["--mode", "rpc"], "/Applications/Pi.app/pi")).toEqual({ command: "/Applications/Pi.app/pi", args: ["--mode", "rpc"] });
+  });
+
   test("awaits the correlated final-text response and persists a session checkpoint", async () => {
     const item = await setup("complete", 75);
     try {
@@ -78,7 +82,7 @@ describe("AgentRunManager", () => {
       const record = await item.manager.store.load(item.project, handle.runId);
       expect(record?.sessionFile).toStartWith(record!.sessionDir);
       expect((await fs.lstat(record!.sessionFile!)).mode & 0o077).toBe(0);
-      expect(record).toMatchObject({ runtimePath: FIXTURE });
+      expect(record).toMatchObject({ runtime: "headless-rpc", runtimePath: FIXTURE });
       expect(record?.runtimeDigest).toMatch(/^[0-9a-f]{64}$/);
       expect(record?.outputDigest).toMatch(/^[0-9a-f]{64}$/);
     } finally {
@@ -87,28 +91,27 @@ describe("AgentRunManager", () => {
     }
   });
 
-  test("projects lifecycle and exact output to an optional non-authoritative viewer", async () => {
-    const starts: any[] = [];
-    const updates: any[] = [];
-    const focuses: string[] = [];
-    const viewer = {
-      start(input: unknown) { starts.push(input); },
-      update(input: unknown) { updates.push(input); },
-      focus(runId: string) { focuses.push(runId); },
-    };
-    const item = await setup("complete", 0, (root) => new AgentRunStore(root), viewer);
+  test("does not fall back to a hidden RPC child when an available interactive host fails", async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agent-run-manager-cmux-fail-")));
+    const project = path.join(root, "project");
+    await fs.mkdir(project);
+    let invoked = 0;
+    const manager = new AgentRunManager({
+      store: new AgentRunStore(path.join(root, "records")),
+      sessionHost: {
+        interactive: true,
+        async prepare() { throw new Error("terminal creation failed"); },
+        focus() {},
+      },
+      invocation: (args) => { invoked++; return { command: process.execPath, args: [FIXTURE, ...args] }; },
+      environment: { PATH: process.env.PATH, PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR },
+      defaultModel: "fixture/default:high",
+    });
     try {
-      const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Plan.", task: "Return.", runId: "viewed-run" });
-      await expect(handle.completion).resolves.toMatchObject({ exitCode: 0, output: "verified fake output" });
-      expect(starts).toHaveLength(1);
-      expect(starts[0]).toMatchObject({ runId: handle.runId, agentId: "planner", status: "queued" });
-      expect(updates.some((update) => update.status === "completed" && update.output === "verified fake output")).toBe(true);
-      item.manager.focus(handle.runId);
-      expect(focuses).toEqual([handle.runId]);
-    } finally {
-      await item.manager.shutdown();
-      await fs.rm(item.root, { recursive: true, force: true });
-    }
+      await expect(manager.start({ projectRoot: project, agent: AGENT, systemPrompt: "Plan.", task: "Must not hide.", runId: "cmux-fail" }))
+        .rejects.toThrow("terminal creation failed");
+      expect(invoked).toBe(1);
+    } finally { await manager.shutdown(); await fs.rm(root, { recursive: true, force: true }); }
   });
 
   test("constructs a minimal child environment", async () => {

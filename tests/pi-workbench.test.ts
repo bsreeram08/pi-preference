@@ -36,6 +36,7 @@ import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
 import {
   CHILD_MEMORY_ACTIONS,
   bashTouchesProtectedAgentStorage,
+  createParentQuestionGuard,
   createToolCallBudgetGuard,
   projectPathBlocked,
 } from "../child-tools.ts";
@@ -218,6 +219,13 @@ describe("dynamic specialist selection", () => {
 describe("Pi workflow routing", () => {
   test("exposes reviewed consolidation proposals to specialist child agents", () => {
     expect(CHILD_MEMORY_ACTIONS).toContain("propose_consolidation");
+  });
+
+  test("allows at most one parent question per child process", () => {
+    const consume = createParentQuestionGuard();
+    expect(consume()).toBe(true);
+    expect(consume()).toBe(false);
+    expect(consume()).toBe(false);
   });
 
   test("hard-blocks Workbench child tools after the configured read-only limit", () => {

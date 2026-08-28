@@ -1,6 +1,6 @@
 # First-party memory and interactive-agent roadmap
 
-> Status: architecture exploration plus the first Agent Runtime and cmux per-agent viewer slices. No external reference package was installed or executed. Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
+> Status: architecture exploration plus the first Agent Runtime and first-party interactive cmux Pi TUI session slice. No external reference package was installed or executed. Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
 > Reference snapshots: `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, and its cited upstream cmux adapter at `HazAT/pi-interactive-subagents@c100577ebf73`.
 
 ## Decision
@@ -10,7 +10,7 @@ Do not install either reference repository. Reuse only the architectural ideas t
 Build two first-party capabilities:
 
 1. **Session Observations** — optional, branch-local, non-authoritative continuity records used only for compaction and explicit review.
-2. **Workbench Agent Runtime** — a persistent RPC-based child-agent manager with an optional cmux viewer/control surface, replacing the external `pi-subagents` package and eventually `pi-background-tasks`.
+2. **Workbench Agent Runtime** — an AgentRunManager with one strict parent protocol: actual interactive Pi TUI children in cmux and a headless RPC compatibility executor outside cmux, replacing the external `pi-subagents` package and eventually `pi-background-tasks`.
 
 Keep `workbench_memory` as the only authoritative durable-memory tier. Observations must never promote themselves into shared memory.
 
@@ -189,7 +189,7 @@ Expose an explicit Coordinator action that converts selected observation IDs int
 
 ### Authority
 
-One `AgentRunManager` owns child process creation, RPC stdin/stdout, process groups, lifecycle, persistence, result validation, and group aggregation. cmux is a client/view, never the run authority.
+One `AgentRunManager` owns bridge process creation, strict LF JSONL control, lifecycle, persistence, result validation, and group aggregation. In cmux, a trusted Node bridge hosts the actual Pi TUI terminal session and preserves the manager protocol; outside cmux, Manager may launch Pi's headless RPC mode for compatibility. cmux is terminal presentation, never lifecycle or result authority.
 
 ### Lifecycle
 
@@ -250,14 +250,14 @@ Default agents should not receive Bash. A Bash-capable profile remains cooperati
 
 ### Parent-child interaction
 
-Use Pi's RPC protocol, not sidecars or screen scraping:
+Preserve Pi's strict RPC-shaped manager contract without screen scraping:
 
 - `prompt`, `steer`, `follow_up`, and `abort` control the child;
-- `agent_settled` is the completion boundary;
-- `get_last_assistant_text` obtains the authoritative final answer;
-- extension UI requests implement child questions.
+- `agent_settled` is the completion boundary only for a true idle, queue-empty settlement;
+- `get_last_assistant_text` obtains the exact committed final answer;
+- `get_state` obtains the exact committed session checkpoint.
 
-A first-party child `ask_parent` tool can call an RPC-compatible UI method. The manager changes the run to `waiting_for_parent`; the Coordinator answers through the matching `extension_ui_response`. No polling is required.
+Inside cmux, those commands cross a private authenticated bounded Unix socket to a trusted child extension; direct TUI input remains native. `ask_parent` uses `ctx.ui.input` directly in the child tab. Outside cmux, headless RPC extension UI requests retain the persisted parent question/answer path.
 
 ### Public tool surface
 
@@ -278,32 +278,30 @@ Individual child completion updates the dashboard without starting a parent turn
 
 ## cmux-native interaction
 
-The installed cmux CLI supports the required primitives:
+The installed cmux CLI supports the narrow required primitives:
 
-- `new-split <direction> --surface ... --focus false`
-- `new-surface --type terminal --pane ... --working-directory ... --focus false`
-- `send --surface ...`
-- `read-screen --surface ...`
-- `focus-pane` / `focus-panel`
-- `close-surface`
-- `rename-tab`
 - `identify`
-- workspace status, progress, logs, and notifications.
+- `new-surface --type terminal --pane ... --workspace ... --focus false`
+- `rename-tab --surface ...`
+- `send --surface ...`
+- `move-surface --surface ... --focus true`
+- `close-surface --surface ...`
 
-Do not launch the child agent by typing a generated shell command into cmux. The installed cmux `new-surface` interface does not accept a terminal command, so terminal-tab launch would require exactly the shell typing this design rejects. Instead:
+Workspace status, progress, logs, and notifications remain separate aggregate lifecycle surfaces.
 
-1. The authoritative manager starts and owns the RPC child.
-2. Workbench resolves the caller's exact workspace and pane with `cmux identify`.
-3. Workbench atomically creates a bounded 0600 HTML projection under the run's private 0700 directory.
-4. `new-surface --type browser --pane <caller> --workspace <caller> --url <private-file-url> --focus false` opens a new tab in the same workspace/pane.
-5. The local page refreshes once per second; manager projections update the private file without putting output in cmux process arguments.
-6. `workbench_agent_focus` targets the recorded surface explicitly. All steer/answer/cancel controls remain in Pi's authoritative dashboard.
-7. Closing the tab detaches only the view; the child keeps running.
-8. Missing cmux degrades to the existing dashboard without affecting execution.
+The interactive launch path is deliberately narrow:
 
-No prompt, output, credential, tool name, raw error, or task text belongs in cmux command arguments, titles, status pills, logs, or notifications. The private local page may display bounded assistant output and the active parent question; this is explicit local viewing under the same-user trust model. Use the approved title grammar `<allowlisted work category> · <lifecycle state>`; unknown or model-selected roles become `Specialist`, for example `Background work · done` or `Researcher · waiting`.
+1. A validated parent cmux session host prepares a private 0600 contract and categorical title.
+2. AgentRunManager spawns a trusted Node bridge instead of `pi --mode rpc`; launch failure inside validated cmux fails closed without hidden fallback.
+3. The bridge resolves the exact caller workspace/pane with `cmux identify` and creates exactly one `new-surface --type terminal ... --focus false` there.
+4. It atomically writes a private 0700 launcher and sends only `bash <private-launcher-path>` to the recorded terminal. Prompt/task/output/model/error text is absent from cmux arguments and titles.
+5. The launcher starts normal Pi TUI mode with the exact private session directory/ID, trusted child tools plus the trusted child bridge extension, exact tools/model/system prompt, disabled ambient resources/approval, minimal environment, exact cwd, and inherited PTY stdio.
+6. The child authenticates over a private local Unix socket, reports the exact existing loadout handshake, and only then receives the task over bounded frames. It forwards only the manager-required bounded events and accepts prompt/steer/follow-up/abort; direct user input remains native TUI behavior. A private 0600 sidecar carries only categorical `waiting`/`running` native-question state so the title can change without exposing question or answer text.
+7. A normal queue-empty settlement commits exact final text and session state before `ctx.shutdown()`. Error/length fails closed. Direct-user abort reports no success and leaves the tab open; cancellation requests abort/shutdown first.
+8. The bridge closes only its recorded surface after child shutdown and verifies exact pane-membership removal rather than relying on cmux's focused-surface fallback. Manual surface closure fails; bridge signal or parent disconnect cleans only that surface. No `read-screen`, screen scraping, browser, HTML, tmux, or built-in cmux agent-session is used.
+9. Outside cmux, the tested headless RPC executor remains available. If any cmux marker is present but caller identity is missing or malformed, extension startup fails clearly rather than silently launching a hidden RPC child.
 
-Use `Ctrl+Alt+A` as a single dashboard focus toggle; `Escape` also returns to the editor. `workbench_agent_focus` focuses the optional cmux viewer without making cmux mandatory.
+Use `Ctrl+Alt+A` as the dashboard focus toggle; `Escape` returns to the editor. `workbench_agent_focus` focuses the recorded interactive terminal when present. Dashboard pause/resume is disabled for interactive runs instead of SIGSTOPing only the bridge.
 
 ## Replacing `pi-subagents`
 
@@ -408,8 +406,8 @@ Rewrite only capabilities that are actually used. Delete the rest rather than ma
 
 - create/focus/detach/close against the locally installed cmux CLI;
 - no focus theft;
-- missing cmux falls back to dashboard-only;
-- closing a viewer does not stop the agent;
+- missing cmux uses the headless compatibility executor;
+- manual interactive surface closure fails the run;
 - no secret or task-content sentinel appears in cmux arguments, metadata, logs, or notifications.
 
 ### Supply-chain removal
@@ -424,7 +422,7 @@ Rewrite only capabilities that are actually used. Delete the rest rather than ma
 1. Harden the existing child launcher environment and event framing.
 2. Extract `subagents.ts` into the persistent `AgentRunManager` without changing `delegate_task` behavior.
 3. Add persistent sessions, child questions, and group aggregation.
-4. Add the optional cmux viewer.
+4. Add the first-party interactive cmux Pi TUI session bridge.
 5. Cut over and remove `pi-subagents`.
 6. Add Session Observations in shadow mode.
 7. Enable deterministic observation-backed compaction after evidence is collected.
