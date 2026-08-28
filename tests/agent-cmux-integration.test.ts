@@ -77,7 +77,7 @@ describe("AgentRunManager interactive cmux runtime", () => {
     const item = await harness();
     const secret = "task-output-secret-sentinel";
     try {
-      const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Private system prompt", task: secret, runId: "interactive-normal" });
+      const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: `Private system prompt ${secret}`, task: "Review release fixtures", runId: "interactive-normal" });
       await expect(handle.completion).resolves.toMatchObject({ exitCode: 0, output: "verified interactive output" });
       const calls = await commands(item.log);
       expect(calls.filter(([name]) => name === "new-surface")).toEqual([[
@@ -86,7 +86,7 @@ describe("AgentRunManager interactive cmux runtime", () => {
       const sends = calls.filter(([name]) => name === "send");
       expect(sends).toHaveLength(1);
       expect(sends[0].at(-1)).toMatch(/^bash '[^']+\/launch-pi-tui\.sh'\n$/);
-      expect(calls).toContainEqual(["rename-tab", "--workspace", "workspace:21", "--surface", "surface:97", "--title", "Planner · running"]);
+      expect(calls).toContainEqual(["rename-tab", "--workspace", "workspace:21", "--surface", "surface:97", "--title", "Project · Review release fixtures"]);
       expect(calls).toContainEqual(["close-surface", "--surface", "surface:97", "--workspace", "workspace:21"]);
       expect(JSON.stringify(calls)).not.toContain(secret);
       expect(JSON.stringify(calls)).not.toContain("verified interactive output");
@@ -108,7 +108,7 @@ describe("AgentRunManager interactive cmux runtime", () => {
     const item = await harness();
     try {
       const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Prompt", task: "ABORTED", runId: "interactive-aborted" });
-      await waitFor(async () => (await commands(item.log)).some((call) => call.at(-1) === "Planner · waiting"));
+      await waitFor(async () => (await commands(item.log)).some((call) => call.at(-1) === "Project · ABORTED"));
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect((await item.manager.status(item.project, handle.runId))[0]?.status).toBe("running");
       expect((await commands(item.log)).some(([name]) => name === "close-surface")).toBe(false);
