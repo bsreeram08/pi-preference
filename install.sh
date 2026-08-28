@@ -34,6 +34,7 @@ done
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+CANONICAL_AGENT_DIR=""
 TARGET_EXTENSION="$AGENT_DIR/extensions/pi-workbench"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 BACKUP_ROOT="$AGENT_DIR/backups/pi-workbench/$STAMP"
@@ -51,6 +52,11 @@ import os, sys
 print(os.path.realpath(sys.argv[1]))
 PY
 }
+
+# Keep install targets in the exact user-selected location, but give child
+# validation commands a canonical path so macOS /tmp and /var aliases do not
+# fail Workbench's no-symlink coordination checks.
+CANONICAL_AGENT_DIR="$(realpath_portable "$AGENT_DIR")"
 
 rollback_links() {
   local index target backup
@@ -98,7 +104,7 @@ if ((STRICT == 1)) && [[ -z "$BUN_BIN" || -z "$TSC_BIN" ]]; then
   exit 1
 fi
 
-CLEAN_ENV=(env -i "HOME=$HOME" "PATH=$PATH" "TMPDIR=${TMPDIR:-/tmp}" "PI_CODING_AGENT_DIR=$AGENT_DIR" "NO_COLOR=1")
+CLEAN_ENV=(env -i "HOME=$HOME" "PATH=$PATH" "TMPDIR=${TMPDIR:-/tmp}" "PI_CODING_AGENT_DIR=$CANONICAL_AGENT_DIR" "NO_COLOR=1")
 
 for required in "$ROOT/reprompter/SKILL.md" "$ROOT/reprompter/LICENSE"; do
   if [[ ! -f "$required" ]]; then
