@@ -18,7 +18,7 @@ import {
   parsePlanningClearance,
   parsePlanVerdict,
   planReviewsPass,
-  verificationPasses,
+  legacyVerificationPasses,
 } from "../workflow-prompts.ts";
 import {
   createWorkflowPlanId,
@@ -33,7 +33,13 @@ import { AgentDetailOverlay } from "../agent-overlay.ts";
 import { canDelegateSpecialists, parseSupervisorDecision } from "../supervisor.ts";
 import { DEFAULT_CONFIG, normalizeConfig } from "../config.ts";
 import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
-import { CHILD_MEMORY_ACTIONS, createToolCallBudgetGuard } from "../child-tools.ts";
+import {
+  CHILD_MEMORY_ACTIONS,
+  bashTouchesProtectedAgentStorage,
+  createParentQuestionGuard,
+  createToolCallBudgetGuard,
+  projectPathBlocked,
+} from "../child-tools.ts";
 import { createResearchTracks, detectResearchMode, parseResearchAgentOutput } from "../research-prompts.ts";
 import {
   auditResearchEvidence,
@@ -120,6 +126,25 @@ describe("agent dashboard state", () => {
     expect(dashboard.getGroups()).toHaveLength(0);
   });
 
+  test("uses Ctrl+Alt+A as a single dashboard focus toggle", () => {
+    const controller = new WorkbenchDashboardController({} as any);
+    let input: ((data: string) => any) | undefined;
+    controller.attach({
+      mode: "tui",
+      ui: {
+        onTerminalInput(handler: (data: string) => any) { input = handler; return () => undefined; },
+        setFooter() {},
+      },
+    } as any);
+    expect(controller.state.isFocused()).toBe(false);
+    controller.toggleFocus();
+    expect(controller.state.isFocused()).toBe(true);
+    controller.toggleFocus();
+    expect(controller.state.isFocused()).toBe(false);
+    expect(input?.("unbound")).toBeUndefined();
+    controller.dispose();
+  });
+
   test("keeps selected-child cancellation local and aborts the run before cancel-all children", () => {
     const controller = new WorkbenchDashboardController({} as any);
     let input: ((data: string) => unknown) | undefined;
@@ -196,6 +221,13 @@ describe("Pi workflow routing", () => {
     expect(CHILD_MEMORY_ACTIONS).toContain("propose_consolidation");
   });
 
+  test("allows at most one parent question per child process", () => {
+    const consume = createParentQuestionGuard();
+    expect(consume()).toBe(true);
+    expect(consume()).toBe(false);
+    expect(consume()).toBe(false);
+  });
+
   test("hard-blocks Workbench child tools after the configured read-only limit", () => {
     const consume = createToolCallBudgetGuard("2");
     expect(consume()).toBe(true);
@@ -203,6 +235,32 @@ describe("Pi workflow routing", () => {
     expect(consume()).toBe(false);
     expect(consume()).toBe(false);
     expect(createToolCallBudgetGuard("")()).toBe(true);
+  });
+
+  test("confines child file tools to the delegated project and protects Pi storage from Bash", async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "child-project-scope-")));
+    const project = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    const agentDir = path.join(root, ".pi", "agent");
+    await fs.mkdir(project);
+    await fs.mkdir(outside);
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.symlink(outside, path.join(project, "escape"));
+    const previous = process.env.PI_WORKBENCH_PROJECT_ROOT;
+    process.env.PI_WORKBENCH_PROJECT_ROOT = project;
+    try {
+      expect(projectPathBlocked(project, "inside.ts", false)).toBe(false);
+      expect(projectPathBlocked(project, outside, false)).toBe(true);
+      expect(projectPathBlocked(project, "escape/secret", false)).toBe(true);
+      expect(projectPathBlocked(project, undefined, true)).toBe(false);
+      expect(bashTouchesProtectedAgentStorage(`cat ${path.join(agentDir, "auth.json")}`, agentDir)).toBe(true);
+      expect(bashTouchesProtectedAgentStorage("cat $PI_CODING_AGENT_DIR/auth.json", agentDir)).toBe(true);
+      expect(bashTouchesProtectedAgentStorage("git diff -- src/index.ts", agentDir)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_WORKBENCH_PROJECT_ROOT;
+      else process.env.PI_WORKBENCH_PROJECT_ROOT = previous;
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   test("routes workflow agents from task effort rather than fixed role assignments", () => {
@@ -231,18 +289,26 @@ describe("Pi workflow routing", () => {
     expect(local.skills).not.toContain("emil-design-eng");
   });
 
-  test("fails plan and code review closed when markers are missing", () => {
+  test("requires one strict terminal plan and code verdict marker", () => {
     expect(parsePlanningClearance('<clearance>{"ready":false,"questions":["Which API?"],"assumptions":[]}</clearance>')).toEqual({
       ready: false,
       questions: ["Which API?"],
       assumptions: [],
     });
     expect(parsePlanVerdict("looks fine")).toBe("REJECT");
-    expect(parsePlanVerdict("<plan-verdict>OKAY</plan-verdict>")).toBe("OKAY");
+    expect(parsePlanVerdict("review prose\n<plan-verdict>OKAY</plan-verdict>\n")).toBe("OKAY");
+    expect(parsePlanVerdict("<plan-verdict>OKAY</plan-verdict>\ntrailing prose")).toBe("REJECT");
+    expect(parsePlanVerdict("<plan-verdict>REJECT</plan-verdict>\n<plan-verdict>OKAY</plan-verdict>")).toBe("REJECT");
+    expect(parsePlanVerdict("<plan-verdict>okay</plan-verdict>")).toBe("REJECT");
+    expect(parsePlanVerdict("<plan-verdict>unknown</plan-verdict>\n<plan-verdict>OKAY</plan-verdict>")).toBe("REJECT");
     expect(parseCodeVerdict("missing marker")).toBe("CHANGES_REQUIRED");
-    expect(parseCodeVerdict("<code-verdict>BLOCKED</code-verdict>")).toBe("BLOCKED");
-    expect(verificationPasses("done <verified/>")).toBe(true);
-    expect(verificationPasses("<verified/> but also <failed/>")).toBe(false);
+    expect(parseCodeVerdict("review prose\n<code-verdict>BLOCKED</code-verdict>\n")).toBe("BLOCKED");
+    expect(parseCodeVerdict("<code-verdict>PASS</code-verdict>\ntrailing prose")).toBe("CHANGES_REQUIRED");
+    expect(parseCodeVerdict("<code-verdict>BLOCKED</code-verdict>\n<code-verdict>PASS</code-verdict>")).toBe("CHANGES_REQUIRED");
+    expect(parseCodeVerdict("<code-verdict>pass</code-verdict>")).toBe("CHANGES_REQUIRED");
+    expect(parseCodeVerdict("<code-verdict>unknown</code-verdict>\n<code-verdict>PASS</code-verdict>")).toBe("CHANGES_REQUIRED");
+    expect(legacyVerificationPasses("done <verified/>")).toBe(true);
+    expect(legacyVerificationPasses("<verified/> but also <failed/>")).toBe(false);
     expect(parseExecutionBlockerVerdict("## Blockers\n- None.\n")).toBe("clear");
     expect(parseExecutionBlockerVerdict("## Blockers\n- Missing migration rollback.\n")).toBe("blocked");
     expect(parseExecutionBlockerVerdict("No section")).toBe("invalid");

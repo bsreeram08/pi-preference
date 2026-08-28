@@ -40,6 +40,9 @@ import {
   writeText,
 } from "./project.ts";
 import { runAgentsParallel, runSingleAgent } from "./subagents.ts";
+import { createCmuxAgentSessionHost } from "./agent-cmux-session.ts";
+import { AgentRunManager, setDefaultAgentRunManager } from "./agent-run-manager.ts";
+import { registerAgentRuntimeTools } from "./agent-runtime-tools.ts";
 import { assertMandatoryAgentBatch, assertMandatoryAgentResult } from "./agent-result-guard.ts";
 import { acquireExclusiveLease } from "./exclusive-lease.ts";
 import { WorkbenchDashboardController } from "./dashboard-controller.ts";
@@ -237,7 +240,14 @@ export default function piWorkbench(pi: ExtensionAPI) {
   registerCmuxWorkbench(pi);
   const exec: Exec = (command, args, options) => pi.exec(command, args, options);
   const dashboard = new WorkbenchDashboardController(pi);
+  const agentRunManager = new AgentRunManager({ dashboard, sessionHost: createCmuxAgentSessionHost() });
+  setDefaultAgentRunManager(agentRunManager);
   const modelRouting = registerModelRouting(pi, (title, body) => report(pi, title, body));
+  registerAgentRuntimeTools(pi, {
+    manager: agentRunManager,
+    exec,
+    getRoutingState: () => modelRouting.getState(),
+  });
 
   registerUserPreferences(pi);
   registerWorkbenchMemory(pi, {
@@ -262,23 +272,23 @@ export default function piWorkbench(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    const parentModel = ctx.model ? `${ctx.model.provider}/${ctx.model.id}${ctx.thinkingLevel ? `:${ctx.thinkingLevel}` : ""}` : undefined;
+    agentRunManager.setDefaultModel(parentModel);
     const root = await findProjectRoot(ctx.cwd, exec);
     const session = await loadSession(getProjectPaths(root));
     if (session && ctx.hasUI) ctx.ui.setStatus("pi-workbench", `council: ${session.phase}`);
     dashboard.attach(ctx);
+    await agentRunManager.recover(root);
   });
 
   pi.on("session_shutdown", async () => {
     dashboard.dispose();
+    await agentRunManager.shutdown();
   });
 
-  pi.registerShortcut("ctrl+alt+down", {
-    description: "Focus Sreeram's Pi Workbench agent cards",
-    handler: () => dashboard.focusCards(),
-  });
-  pi.registerShortcut("ctrl+alt+up", {
-    description: "Return focus to the Pi editor",
-    handler: () => dashboard.unfocusCards(),
+  pi.registerShortcut("ctrl+alt+a", {
+    description: "Toggle Sreeram's Pi Workbench agent dashboard",
+    handler: () => dashboard.toggleFocus(),
   });
 
   pi.registerCommand("council", {
@@ -334,7 +344,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
       ctx.ui.setStatus("pi-workbench", "council: clarifying");
 
       dashboard.beginRun(`council-${Date.now()}`);
-      const supervisor = new SupervisorClient(root, dashboard, pi);
+      const supervisor = new SupervisorClient(root, dashboard, agentRunManager);
       const progress = makeProgress(ctx, "Sreeram's Pi Workbench — clarification");
       try {
         await supervisor.start();
@@ -546,7 +556,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
         return;
       }
       dashboard.beginRun(`implementation-${Date.now()}`);
-      const supervisor = new SupervisorClient(root, dashboard, pi);
+      const supervisor = new SupervisorClient(root, dashboard, agentRunManager);
       const progress = makeProgress(ctx, "Sreeram's Pi Workbench — implementation");
       let workspaceGroup: Awaited<ReturnType<typeof createWorkerWorkspaces>> | undefined;
       try {

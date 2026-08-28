@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { deriveCmuxWorkIdentity, type CmuxWorkIdentity } from "./cmux-naming.ts";
 import {
   createWorkflowLifecycleEvent,
   decodeWorkflowLifecycleEvent,
@@ -12,6 +13,8 @@ import {
 
 export type CmuxTaskState = WorkflowLifecycleEvent["state"];
 export type CmuxCommandRunner = (args: readonly string[]) => Promise<boolean>;
+export interface CmuxCommandResult { readonly ok: boolean; readonly stdout: string; readonly stderr: string }
+export type CmuxOutputRunner = (args: readonly string[]) => Promise<CmuxCommandResult>;
 
 export interface CmuxEnvironment {
   readonly workspaceId?: string;
@@ -23,7 +26,7 @@ interface RegisterOptions {
   readonly runner?: CmuxCommandRunner;
 }
 
-interface CmuxRunnerOptions {
+export interface CmuxRunnerOptions {
   readonly timeoutMs?: number;
   readonly killGraceMs?: number;
 }
@@ -69,19 +72,42 @@ function pruneAttentionEpisodes(map: Map<string, AttentionEpisode>, ttlMs: numbe
   }
 }
 
-export function cmuxTitle(event: WorkflowLifecycleEvent): string {
-  const metadata = workflowLifecycleMetadata(event);
-  return `${metadata.title} · ${metadata.status}`;
+export function cmuxTitle(identity: CmuxWorkIdentity): string {
+  return identity.title;
 }
 
-function cmuxNotification(event: WorkflowLifecycleEvent, environment: CmuxEnvironment): readonly string[] | undefined {
+function identityCommands(identity: CmuxWorkIdentity, environment: CmuxEnvironment): readonly (readonly string[])[] {
+  if (!environment.workspaceId) return [];
+  const commands: Array<readonly string[]> = [];
+  if (environment.surfaceId) {
+    commands.push([
+      "rename-tab",
+      "--workspace", environment.workspaceId,
+      "--surface", environment.surfaceId,
+      "--title", cmuxTitle(identity),
+    ]);
+  }
+  commands.push([
+    "workspace-action",
+    "--workspace", environment.workspaceId,
+    "--action", "set-description",
+    "--description", identity.description,
+  ]);
+  return commands;
+}
+
+function cmuxNotification(
+  event: WorkflowLifecycleEvent,
+  environment: CmuxEnvironment,
+  identity: CmuxWorkIdentity,
+): readonly string[] | undefined {
   if (!environment.workspaceId || !environment.surfaceId) return undefined;
   const metadata = workflowLifecycleMetadata(event);
   return [
     "notify",
-    "--title", metadata.title,
+    "--title", identity.title,
     "--subtitle", metadata.status,
-    "--body", metadata.description,
+    "--body", identity.description,
     "--workspace", environment.workspaceId,
     "--surface", environment.surfaceId,
   ];
@@ -91,25 +117,11 @@ function transitionCommands(
   event: WorkflowLifecycleEvent,
   environment: CmuxEnvironment,
   notify: boolean,
+  identity: CmuxWorkIdentity,
 ): readonly (readonly string[])[] {
   if (!environment.workspaceId) return [];
   const metadata = workflowLifecycleMetadata(event);
-  const commands: Array<readonly string[]> = [];
-  if (environment.surfaceId) {
-    commands.push([
-      "rename-tab",
-      "--workspace", environment.workspaceId,
-      "--surface", environment.surfaceId,
-      "--title", cmuxTitle(event),
-    ]);
-  }
-  commands.push(
-    [
-      "workspace-action",
-      "--workspace", environment.workspaceId,
-      "--action", "set-description",
-      "--description", metadata.description,
-    ],
+  const commands: Array<readonly string[]> = [
     [
       "set-status", STATUS_KEY, metadata.status,
       "--icon", metadata.icon,
@@ -126,10 +138,10 @@ function transitionCommands(
       "--level", metadata.level,
       "--source", "pi",
       "--workspace", environment.workspaceId,
-      "--", metadata.description,
+      "--", `${identity.title}: ${metadata.status}`,
     ],
-  );
-  const notification = notify ? cmuxNotification(event, environment) : undefined;
+  ];
+  const notification = notify ? cmuxNotification(event, environment, identity) : undefined;
   if (notification) commands.push(notification);
   return commands;
 }
@@ -150,7 +162,7 @@ function cleanupCommands(environment: CmuxEnvironment): readonly (readonly strin
 function safeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const allowed = [
     "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL",
-    "CMUX_SOCKET_PATH", "CMUX_SOCKET", "CMUX_SOCKET_PASSWORD",
+    "CMUX_SOCKET_PATH", "CMUX_SOCKET", "CMUX_SOCKET_PASSWORD", "CMUX_SOCKET_CAPABILITY",
     "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_TAB_ID",
   ];
   return Object.fromEntries(allowed.flatMap((key) => environment[key] === undefined ? [] : [[key, environment[key]]]));
@@ -163,26 +175,29 @@ function cmuxExecutable(environment: NodeJS.ProcessEnv): string {
   return path.join(agentDir, "bin", "cmux");
 }
 
-export function createCmuxCommandRunner(
+export function createCmuxOutputRunner(
   environment: NodeJS.ProcessEnv = process.env,
   options: CmuxRunnerOptions = {},
-): CmuxCommandRunner {
+): CmuxOutputRunner {
   const executable = cmuxExecutable(environment);
   const childEnvironment = safeEnvironment(environment);
   const timeoutMs = Math.max(1, options.timeoutMs ?? 5_000);
   const killGraceMs = Math.max(1, options.killGraceMs ?? 500);
-  return (args) => new Promise<boolean>((resolve) => {
+  return (args) => new Promise<CmuxCommandResult>((resolve) => {
     let finished = false;
     let timedOut = false;
+    let stdout = "";
+    let stderr = "";
     let killTimer: NodeJS.Timeout | undefined;
-    const child = spawn(executable, [...args], { env: childEnvironment, stdio: "ignore" });
+    const child = spawn(executable, [...args], { env: childEnvironment, stdio: ["ignore", "pipe", "pipe"] });
     child.unref();
-    const finish = (success: boolean): void => {
+    const append = (current: string, chunk: Buffer): string => `${current}${chunk.toString()}`.slice(-64 * 1024);
+    const finish = (result: CmuxCommandResult): void => {
       if (finished) return;
       finished = true;
       clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
-      resolve(success);
+      resolve(result);
     };
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
@@ -193,19 +208,31 @@ export function createCmuxCommandRunner(
       killTimer.unref?.();
     }, timeoutMs);
     timeoutTimer.unref?.();
-    child.once("error", () => finish(false));
-    child.once("close", (code) => finish(!timedOut && code === 0));
+    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    child.once("error", (error) => finish({ ok: false, stdout, stderr: `${stderr}${error.message}`.slice(-64 * 1024) }));
+    child.once("close", (code) => finish({ ok: !timedOut && code === 0, stdout, stderr }));
   });
+}
+
+export function createCmuxCommandRunner(
+  environment: NodeJS.ProcessEnv = process.env,
+  options: CmuxRunnerOptions = {},
+): CmuxCommandRunner {
+  const runner = createCmuxOutputRunner(environment, options);
+  return async (args) => (await runner(args)).ok;
 }
 
 export class CmuxTaskBridge {
   readonly environment: CmuxEnvironment;
   readonly runner: CmuxCommandRunner;
   private tail: Promise<void> = Promise.resolve();
+  private identity: CmuxWorkIdentity;
 
-  constructor(environment: CmuxEnvironment, runner: CmuxCommandRunner) {
+  constructor(environment: CmuxEnvironment, runner: CmuxCommandRunner, identity = deriveCmuxWorkIdentity({ cwd: process.cwd() })) {
     this.environment = environment;
     this.runner = runner;
+    this.identity = identity;
   }
 
   private enqueue(commands: readonly (readonly string[])[]): void {
@@ -217,8 +244,13 @@ export class CmuxTaskBridge {
       .catch(() => undefined);
   }
 
-  transition(event: WorkflowLifecycleEvent, notify = false): void {
-    this.enqueue(transitionCommands(event, this.environment, notify));
+  identify(identity: CmuxWorkIdentity): void {
+    this.identity = identity;
+    this.enqueue(identityCommands(identity, this.environment));
+  }
+
+  transition(event: WorkflowLifecycleEvent, notify = false, notificationIdentity = this.identity): void {
+    this.enqueue(transitionCommands(event, this.environment, notify, notificationIdentity));
   }
 
   activity(): void {
@@ -234,8 +266,8 @@ export class CmuxTaskBridge {
   }
 }
 
-function setTerminalTitle(ctx: ExtensionContext | undefined, event: WorkflowLifecycleEvent): void {
-  if (ctx?.hasUI) ctx.ui.setTitle(cmuxTitle(event));
+function setTerminalTitle(ctx: ExtensionContext | undefined, identity: CmuxWorkIdentity): void {
+  if (ctx?.hasUI) ctx.ui.setTitle(cmuxTitle(identity));
 }
 
 export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions = {}): CmuxTaskBridge {
@@ -244,16 +276,19 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
     workspaceId: text(environment.CMUX_WORKSPACE_ID),
     surfaceId: text(environment.CMUX_SURFACE_ID) ?? text(environment.CMUX_TAB_ID),
   };
-  const bridge = new CmuxTaskBridge(cmuxEnvironment, options.runner ?? createCmuxCommandRunner(environment));
+  const initialIdentity = deriveCmuxWorkIdentity({ cwd: process.cwd() });
+  const bridge = new CmuxTaskBridge(cmuxEnvironment, options.runner ?? createCmuxCommandRunner(environment), initialIdentity);
   let currentEvent = createWorkflowLifecycleEvent("session", "running");
   const terminalRuns = new Map<string, number>();
   const backgroundTasks = new Map<string, number>();
   const attentionEpisodes = new Map<string, AttentionEpisode>();
   const supervisorRequests = new Map<string, number>();
 
-  pi.on("before_agent_start", (_event, ctx) => {
+  pi.on("before_agent_start", (event, ctx) => {
     currentEvent = createWorkflowLifecycleEvent("session", "running");
-    setTerminalTitle(ctx, currentEvent);
+    const identity = deriveCmuxWorkIdentity({ cwd: ctx.cwd, task: event.prompt });
+    setTerminalTitle(ctx, identity);
+    bridge.identify(identity);
     bridge.transition(currentEvent);
   });
 
@@ -268,8 +303,8 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
   pi.on("agent_settled", (_event, ctx) => {
     if (!ctx.isIdle()) return;
     currentEvent = createWorkflowLifecycleEvent("session", "completed");
-    setTerminalTitle(ctx, currentEvent);
-    // cmux-session.ts owns ordinary parent completion notifications.
+    // Keep the project/task title and description stable. cmux-session.ts owns
+    // ordinary parent completion notifications.
     bridge.transition(currentEvent);
   });
 
@@ -320,7 +355,12 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
       if (key.startsWith(`${runId}:`)) attentionEpisodes.delete(key);
     }
     const success = payload?.success === true || ["complete", "completed"].includes(text(payload?.state) ?? "");
-    bridge.transition(createWorkflowLifecycleEvent("delegation", success ? "completed" : "failed"), !success);
+    const notificationIdentity = deriveCmuxWorkIdentity({
+      cwd: process.cwd(),
+      task: text(payload?.name) ?? text(payload?.title),
+      role: "Workbench agent",
+    });
+    bridge.transition(createWorkflowLifecycleEvent("delegation", success ? "completed" : "failed"), !success, notificationIdentity);
   });
 
   pi.events.on("pi-background-tasks:terminal:v1", (value: unknown) => {
@@ -330,7 +370,12 @@ export function registerCmuxWorkbench(pi: ExtensionAPI, options: RegisterOptions
     const id = text(taskPayload?.id);
     if (!id || !rememberBounded(backgroundTasks, id, 60 * 60 * 1000)) return;
     const success = text(taskPayload?.status) === "completed";
-    bridge.transition(createWorkflowLifecycleEvent("background", success ? "completed" : "failed"), !success);
+    const notificationIdentity = deriveCmuxWorkIdentity({
+      cwd: process.cwd(),
+      task: text(taskPayload?.name),
+      role: "Background task",
+    });
+    bridge.transition(createWorkflowLifecycleEvent("background", success ? "completed" : "failed"), !success, notificationIdentity);
   });
 
   pi.events.on(WORKFLOW_LIFECYCLE_EVENT, (value: unknown) => {
