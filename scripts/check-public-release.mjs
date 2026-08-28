@@ -52,7 +52,7 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "ut
 if (manifest.license !== "MIT") fail("package.json license must be MIT");
 if (manifest.private !== true) fail("package.json must remain private to prevent accidental npm publication");
 if (manifest.author !== "Sreeram Balamurugan") fail("package.json author does not match the approved public identity");
-if (manifest.repository?.url !== "git+https://github.com/bsreeram08/pi-preference.git") {
+if (manifest.repository?.url !== "git+https://github.com/bsreeram08/pi-workbench.git") {
   fail("package.json repository URL is missing or unexpected");
 }
 for (const [name, version] of Object.entries(manifest.devDependencies ?? {})) {
@@ -61,7 +61,7 @@ for (const [name, version] of Object.entries(manifest.devDependencies ?? {})) {
 
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 if (!readme.startsWith("# Sreeram's Pi Workbench\n")) fail("README title does not use the approved public name");
-if (/private GitHub repository|git@github\.com:bsreeram08\/pi-preference/.test(readme)) {
+if (/private GitHub repository|git@github\.com:bsreeram08\/pi-workbench/.test(readme)) {
   fail("README still contains private or SSH-only distribution guidance");
 }
 
