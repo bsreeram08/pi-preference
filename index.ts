@@ -40,6 +40,8 @@ import {
   writeText,
 } from "./project.ts";
 import { runAgentsParallel, runSingleAgent } from "./subagents.ts";
+import { AgentRunManager, setDefaultAgentRunManager } from "./agent-run-manager.ts";
+import { registerAgentRuntimeTools } from "./agent-runtime-tools.ts";
 import { assertMandatoryAgentBatch, assertMandatoryAgentResult } from "./agent-result-guard.ts";
 import { acquireExclusiveLease } from "./exclusive-lease.ts";
 import { WorkbenchDashboardController } from "./dashboard-controller.ts";
@@ -237,7 +239,14 @@ export default function piWorkbench(pi: ExtensionAPI) {
   registerCmuxWorkbench(pi);
   const exec: Exec = (command, args, options) => pi.exec(command, args, options);
   const dashboard = new WorkbenchDashboardController(pi);
+  const agentRunManager = new AgentRunManager({ dashboard });
+  setDefaultAgentRunManager(agentRunManager);
   const modelRouting = registerModelRouting(pi, (title, body) => report(pi, title, body));
+  registerAgentRuntimeTools(pi, {
+    manager: agentRunManager,
+    exec,
+    getRoutingState: () => modelRouting.getState(),
+  });
 
   registerUserPreferences(pi);
   registerWorkbenchMemory(pi, {
@@ -266,9 +275,11 @@ export default function piWorkbench(pi: ExtensionAPI) {
     const session = await loadSession(getProjectPaths(root));
     if (session && ctx.hasUI) ctx.ui.setStatus("pi-workbench", `council: ${session.phase}`);
     dashboard.attach(ctx);
+    await agentRunManager.recover(root);
   });
 
   pi.on("session_shutdown", async () => {
+    await agentRunManager.shutdown();
     dashboard.dispose();
   });
 
@@ -334,7 +345,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
       ctx.ui.setStatus("pi-workbench", "council: clarifying");
 
       dashboard.beginRun(`council-${Date.now()}`);
-      const supervisor = new SupervisorClient(root, dashboard, pi);
+      const supervisor = new SupervisorClient(root, dashboard, agentRunManager);
       const progress = makeProgress(ctx, "Sreeram's Pi Workbench — clarification");
       try {
         await supervisor.start();
@@ -546,7 +557,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
         return;
       }
       dashboard.beginRun(`implementation-${Date.now()}`);
-      const supervisor = new SupervisorClient(root, dashboard, pi);
+      const supervisor = new SupervisorClient(root, dashboard, agentRunManager);
       const progress = makeProgress(ctx, "Sreeram's Pi Workbench — implementation");
       let workspaceGroup: Awaited<ReturnType<typeof createWorkerWorkspaces>> | undefined;
       try {

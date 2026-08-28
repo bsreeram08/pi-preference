@@ -64,7 +64,12 @@ export class AgentDetailOverlay implements Component, Focusable {
     this.input.onSubmit = (value) => {
       const job = this.job;
       if (!job || isFinishedStatus(job.status) || job.status === "paused" || !value.trim()) return;
-      dashboard.control(job.id)?.steer(value.trim());
+      const control = dashboard.control(job.id);
+      if (job.status === "waiting_for_parent" && job.question && control?.answer) {
+        control.answer(job.question.id, value.trim());
+      } else {
+        control?.steer(value.trim());
+      }
       dashboard.addTranscript(job.id, { kind: "user", text: value.trim(), timestamp: Date.now() });
       this.input.setValue("");
       this.actions.requestRender();

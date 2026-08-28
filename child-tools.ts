@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   WorkbenchMemoryStore,
+  canonicalMemoryPath,
   createMemoryRoots,
   workbenchAgentIdFromEnvironment,
   type MemoryKind,
@@ -43,6 +44,27 @@ function truncate(text: string): string {
   return `${result}\n\n[Tool output truncated.]`;
 }
 
+function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function projectPathBlocked(cwd: string, value: string | undefined, optional: boolean): boolean {
+  if (optional && !value?.trim()) return false;
+  const projectRoot = canonicalMemoryPath(process.env.PI_WORKBENCH_PROJECT_ROOT?.trim() || cwd);
+  const candidate = canonicalMemoryPath(path.resolve(cwd, value?.trim() || "."));
+  return !isInside(projectRoot, candidate);
+}
+
+export function bashTouchesProtectedAgentStorage(command: string, agentDir: string): boolean {
+  const normalized = command.replaceAll("\\", "/");
+  const protectedRoot = canonicalMemoryPath(agentDir).replaceAll("\\", "/");
+  return normalized.includes(protectedRoot)
+    || /\$(?:\{)?PI_CODING_AGENT_DIR(?:\})?/.test(normalized)
+    || /(?:^|[\s"'=])~\/?\.pi\/agent(?:\/|$)/.test(normalized)
+    || /(?:^|[\s"'=])(?:\/Users\/[^/]+|\/home\/[^/]+)\/\.pi\/agent(?:\/|$)/.test(normalized);
+}
+
 export default function piWorkbenchChildTools(pi: ExtensionAPI) {
   const agentDir = getAgentDir();
   const agentId = workbenchAgentIdFromEnvironment("specialist");
@@ -50,7 +72,7 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
   const consumeToolCall = createToolCallBudgetGuard();
 
   function memoryStoreFor(cwd: string): WorkbenchMemoryStore {
-    const requestedRoot = process.env.PI_WORKBENCH_PROJECT_ROOT?.trim() || cwd;
+    const requestedRoot = process.env.PI_WORKBENCH_MEMORY_PROJECT_ROOT?.trim() || cwd;
     const roots = createMemoryRoots(agentDir, requestedRoot);
     let store = memoryStores.get(roots.projectPath);
     if (!store) {
@@ -61,6 +83,14 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
+    const runId = process.env.PI_WORKBENCH_RUN_ID?.trim();
+    if (runId) {
+      ctx.ui.setStatus("pi-workbench-child-loadout", JSON.stringify({
+        version: 1,
+        runId,
+        activeTools: [...pi.getActiveTools()].sort(),
+      }));
+    }
     const smokeFile = process.env.PI_WORKBENCH_CHILD_SMOKE_FILE?.trim();
     if (!smokeFile) return;
     const store = memoryStoreFor(ctx.cwd);
@@ -85,20 +115,24 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
     const roots = memoryStoreFor(ctx.cwd).roots;
     let blocked = false;
     if (isToolCallEventType("bash", event)) {
-      blocked = bashTouchesProtectedMemory(roots, agentDir, event.input.command);
+      blocked = bashTouchesProtectedMemory(roots, agentDir, event.input.command)
+        || bashTouchesProtectedAgentStorage(event.input.command, agentDir);
     } else if (isToolCallEventType("read", event)
       || isToolCallEventType("write", event)
       || isToolCallEventType("edit", event)) {
-      blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, false);
+      blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, false)
+        || projectPathBlocked(ctx.cwd, event.input.path, false);
     } else if (isToolCallEventType("grep", event) || isToolCallEventType("find", event)) {
-      blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, true);
+      blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, true)
+        || projectPathBlocked(ctx.cwd, event.input.path, true);
     } else if (isToolCallEventType("ls", event)) {
-      blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, false);
+      blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, false)
+        || projectPathBlocked(ctx.cwd, event.input.path, false);
     }
     if (blocked) {
       return {
         block: true,
-        reason: "Direct access to protected Workbench memory storage is blocked. Use workbench_memory so isolation, expiry, tombstones, and integrity checks remain enforced.",
+        reason: "Direct access outside the delegated project or to protected Workbench/Pi storage is blocked. Use workbench_memory for reviewed memory access.",
       };
     }
   });
@@ -115,6 +149,27 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
     return {
       systemPrompt: `${event.systemPrompt}\n\n${memoryContext ? `${memoryContext}\n\n` : ""}${guidance}`,
     };
+  });
+
+  pi.registerTool({
+    name: "ask_parent",
+    label: "Ask Parent",
+    description: "Ask the parent Coordinator one focused question and wait for its answer. Available only for explicitly interactive Workbench agent runs.",
+    parameters: Type.Object({
+      question: Type.String({ minLength: 1, maxLength: 4_000, description: "One focused question for the parent Coordinator" }),
+      timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 15 * 60_000, default: 5 * 60_000 })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (process.env.PI_WORKBENCH_ALLOW_PARENT_QUESTION !== "1") {
+        throw new Error("Parent questions are disabled for this delegated run. Return the blocker in your final synthesis instead.");
+      }
+      const answer = await ctx.ui.input("Parent answer required", params.question.trim(), { timeout: params.timeoutMs ?? 5 * 60_000 });
+      if (answer === undefined) throw new Error("The parent question was cancelled or timed out.");
+      return {
+        content: [{ type: "text", text: answer }],
+        details: { answered: true },
+      };
+    },
   });
 
   pi.registerTool({

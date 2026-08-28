@@ -1,15 +1,7 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import * as fs from "node:fs";
-import * as fsp from "node:fs/promises";
-import * as os from "node:os";
-import * as path from "node:path";
-import { StringDecoder } from "node:string_decoder";
-import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { AgentControl } from "./dashboard-state.ts";
+import type { AgentRunManager } from "./agent-run-manager.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
+import type { AgentSpec } from "./types.ts";
 
-const CHILD_TOOLS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-tools.ts");
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const ACTIONS = new Set(["delegate", "ask_user", "synthesize", "review", "verify", "fix", "complete"]);
 
@@ -55,30 +47,13 @@ function truncate(text: string): string {
   return `${result}\n\n[Supervisor output truncated at 50KB.]`;
 }
 
-function invocation(args: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const virtual = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !virtual && fs.existsSync(currentScript)) return { command: process.execPath, args: [currentScript, ...args] };
-  const executable = path.basename(process.execPath).toLowerCase();
-  return /^(node|bun)(\.exe)?$/.test(executable) ? { command: "pi", args } : { command: process.execPath, args };
-}
-
-function send(child: ChildProcessWithoutNullStreams, command: Record<string, unknown>): void {
-  if (!child.stdin.destroyed && child.stdin.writable) child.stdin.write(`${JSON.stringify(command)}\n`);
-}
-
-function signalGroup(child: ChildProcessWithoutNullStreams | undefined, signal: NodeJS.Signals): void {
-  if (!child) return;
-  try {
-    if (child.pid && process.platform !== "win32") {
-      process.kill(-child.pid, signal);
-      return;
-    }
-    child.kill(signal);
-  } catch {
-    // The child may already have exited.
-  }
-}
+const SUPERVISOR_AGENT: AgentSpec = {
+  id: "council-supervisor",
+  title: "Council Supervisor",
+  description: "Chooses the next evidence-backed council phase without modifying files.",
+  triggers: ["council", "orchestration", "decision"],
+  readOnly: true,
+};
 
 export const SUPERVISOR_SYSTEM_PROMPT = `You are the Council Supervisor, the adaptive orchestrator for a project-scoped coding council.
 
@@ -89,150 +64,58 @@ Return exactly one machine-readable decision and no other fenced JSON:
 
 Use action=delegate for specialist work, review for reviewers, verify for verification, fix for corrective implementation, ask_user when a user decision is required, synthesize when the lead should produce an intent, and complete only when all safety gates are already satisfied. Keep roles relevant and concise.`;
 
+/**
+ * Council decision facade over the authoritative AgentRunManager.
+ * Each decision is one independently persisted run; supplied council context remains authoritative.
+ */
 export class SupervisorClient {
-  private child?: ChildProcessWithoutNullStreams;
-  private tempDir?: string;
-  private currentOutput = "";
-  private pending?: { resolve: (text: string) => void; reject: (error: Error) => void };
+  private activeRunId?: string;
   private disposed = false;
-  private started = false;
+  private decisionSequence = 0;
 
   constructor(
     private readonly projectRoot: string,
     private readonly dashboard: WorkbenchDashboardController,
-    private readonly pi: ExtensionAPI,
-  ) {
-    this.dashboard.addJob("supervisor", "Council Supervisor", "supervisor", "Supervisor");
-  }
+    private readonly manager: AgentRunManager,
+  ) {}
 
   async start(): Promise<void> {
-    if (this.started) return;
-    this.started = true;
-    this.tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "pi-workbench-supervisor-"));
-    const promptPath = path.join(this.tempDir, "system.md");
-    await fsp.writeFile(promptPath, SUPERVISOR_SYSTEM_PROMPT, { encoding: "utf8", mode: 0o600 });
-    const args = [
-      "--mode", "rpc", "--no-session", "--no-extensions", "--extension", CHILD_TOOLS_PATH,
-      "--no-prompt-templates", "--append-system-prompt", promptPath,
-      "--tools", "read,grep,find,ls,qmd_search",
-    ];
-    const child = spawn(invocation(args).command, invocation(args).args, {
-      cwd: this.projectRoot,
-      shell: false,
-      detached: process.platform !== "win32",
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PI_WORKBENCH_AGENT: "supervisor" },
-    });
-    this.child = child;
-    this.dashboard.setControl("supervisor", this.control());
-    this.dashboard.updateJob("supervisor", { status: "running", startedAt: Date.now(), latestActivity: "Supervisor started" });
-
-    let buffer = "";
-    const decoder = new StringDecoder("utf8");
-    let stderr = "";
-    const processLine = (line: string) => {
-      if (!line.trim()) return;
-      let event: any;
-      try { event = JSON.parse(line); } catch { return; }
-      if (event.type === "message_update") {
-        const delta = event.assistantMessageEvent;
-        if (delta?.type === "text_delta") this.currentOutput += delta.delta ?? "";
-        this.dashboard.updateJob("supervisor", { output: truncate(this.currentOutput), latestActivity: "Deciding next phase" });
-      } else if (event.type === "message_end" && event.message?.role === "assistant") {
-        const text = Array.isArray(event.message.content)
-          ? event.message.content.filter((part: any) => part.type === "text").map((part: any) => part.text).join("\n")
-          : "";
-        if (text) {
-          this.currentOutput = text;
-          this.dashboard.state.addTranscript("supervisor", { kind: "assistant", text, timestamp: Date.now() });
-        }
-        this.dashboard.updateJob("supervisor", { output: truncate(this.currentOutput), latestActivity: "Decision ready" });
-      } else if (event.type === "tool_execution_start") {
-        this.dashboard.updateJob("supervisor", { latestActivity: `${event.toolName ?? "tool"} running` });
-      } else if (event.type === "agent_settled") {
-        const pending = this.pending;
-        this.pending = undefined;
-        pending?.resolve(this.currentOutput);
-      } else if (event.type === "extension_error") {
-        const error = String(event.error ?? "Supervisor extension error");
-        this.dashboard.updateJob("supervisor", { status: "failed", error, latestActivity: error });
-        this.pending?.reject(new Error(error));
-        this.pending = undefined;
-      }
-    };
-    child.stdout.on("data", (data: Buffer) => {
-      buffer += decoder.write(data);
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) processLine(line.endsWith("\r") ? line.slice(0, -1) : line);
-    });
-    child.stderr.on("data", (data: Buffer) => { stderr += data.toString(); });
-    child.on("error", (error) => this.fail(error));
-    child.on("close", (code) => {
-      buffer += decoder.end();
-      if (buffer.trim()) processLine(buffer);
-      if (!this.disposed && code !== 0) this.fail(new Error(stderr || `Supervisor exited with code ${code}`));
-    });
+    if (this.disposed) throw new Error("Supervisor is stopped.");
   }
 
   async decide(context: string): Promise<SupervisorDecision> {
-    if (!this.child) await this.start();
-    this.currentOutput = "";
-    const output = await new Promise<string>((resolve, reject) => {
-      if (!this.child) return reject(new Error("Supervisor is not running"));
-      this.pending = { resolve, reject };
-      send(this.child, { type: "prompt", id: `decision-${Date.now()}`, message: context });
+    if (this.disposed) throw new Error("Supervisor is stopped.");
+    if (this.activeRunId) throw new Error("Supervisor decision is already running.");
+    const handle = await this.manager.start({
+      projectRoot: this.projectRoot,
+      agent: SUPERVISOR_AGENT,
+      systemPrompt: SUPERVISOR_SYSTEM_PROMPT,
+      task: context,
+      runId: `council-supervisor-${++this.decisionSequence}`,
+      runContext: {
+        dashboard: this.dashboard,
+        groupId: "supervisor",
+        groupTitle: "Supervisor",
+        budget: { turns: 16, tools: 60 },
+      },
     });
-    const decision = parseSupervisorDecision(output);
-    if (!decision) throw new Error(`Supervisor returned an invalid decision: ${output.slice(0, 500)}`);
-    this.dashboard.updateJob("supervisor", { latestActivity: `${decision.action}: ${decision.phase}`, output: truncate(output) });
-    return decision;
-  }
-
-  private control(): AgentControl {
-    return {
-      steer: (message) => {
-        if (!this.child) return;
-        send(this.child, { type: "steer", message });
-        this.dashboard.updateJob("supervisor", { status: "steering", latestActivity: "Supervisor steering queued", queuedMessages: [...(this.dashboard.state.getJob("supervisor")?.queuedMessages ?? []), message] });
-      },
-      pause: () => {
-        signalGroup(this.child, "SIGSTOP");
-        this.dashboard.updateJob("supervisor", { status: "paused", latestActivity: "Supervisor suspended" });
-      },
-      resume: () => {
-        signalGroup(this.child, "SIGCONT");
-        this.dashboard.updateJob("supervisor", { status: "running", latestActivity: "Supervisor resumed" });
-      },
-      cancel: () => {
-        if (this.child) send(this.child, { type: "abort" });
-        this.dashboard.updateJob("supervisor", { status: "cancelled", latestActivity: "Supervisor cancelled" });
-      },
-      restart: () => {
-        // A restart is intentionally handled by the parent run lifecycle.
-      },
-    };
-  }
-
-  private fail(error: Error): void {
-    if (this.disposed) return;
-    this.dashboard.finishJob("supervisor", "failed", { error: error.message, latestActivity: "Supervisor failed" });
-    this.pending?.reject(error);
-    this.pending = undefined;
+    this.activeRunId = handle.runId;
+    try {
+      const result = await handle.completion;
+      if (result.cancelled) throw new Error("Supervisor decision was cancelled.");
+      if (result.exitCode !== 0 || !result.output.trim()) throw new Error(result.error || "Supervisor decision failed.");
+      const decision = parseSupervisorDecision(result.output);
+      if (!decision) throw new Error(`Supervisor returned an invalid decision: ${result.output.slice(0, 500)}`);
+      this.dashboard.updateJob(handle.runId, { latestActivity: `${decision.action}: ${decision.phase}`, output: truncate(result.output) });
+      return decision;
+    } finally {
+      this.activeRunId = undefined;
+    }
   }
 
   async dispose(): Promise<void> {
     this.disposed = true;
-    this.pending?.reject(new Error("Supervisor stopped"));
-    this.pending = undefined;
-    if (this.child) {
-      signalGroup(this.child, "SIGTERM");
-      this.child.stdin.end();
-    }
-    this.dashboard.setControl("supervisor", undefined);
-    const job = this.dashboard.state.getJob("supervisor");
-    if (job && !job.finishedAt) this.dashboard.finishJob("supervisor", "completed", { latestActivity: "Supervisor stopped" });
-    if (this.tempDir) await fsp.rm(this.tempDir, { recursive: true, force: true });
-    this.child = undefined;
+    if (this.activeRunId) await this.manager.cancel(this.activeRunId);
+    this.activeRunId = undefined;
   }
 }

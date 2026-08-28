@@ -1,11 +1,17 @@
 export type AgentStatus =
   | "queued"
+  | "starting"
   | "running"
   | "steering"
+  | "waiting_for_parent"
+  | "cancelling"
+  | "terminating"
   | "paused"
   | "completed"
   | "failed"
   | "cancelled"
+  | "interrupted"
+  | "orphaned"
   | "retrying";
 
 export interface AgentToolEvent {
@@ -43,6 +49,8 @@ export interface AgentDashboardJob {
   error?: string;
   output?: string;
   exitCode?: number;
+  sessionPresent?: boolean;
+  question?: { id: string; text: string };
 }
 
 export interface AgentDashboardGroup {
@@ -58,6 +66,7 @@ export interface AgentControl {
   resume(): void;
   cancel(): void;
   restart(): void;
+  answer?(questionId: string, value: string): void;
 }
 
 export interface DashboardJobInput {
@@ -68,7 +77,7 @@ export interface DashboardJobInput {
 }
 
 function isFinished(status: AgentStatus): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted" || status === "orphaned";
 }
 
 export class AgentDashboardState {
