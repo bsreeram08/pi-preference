@@ -346,9 +346,10 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal) {
       const result = await fetchResearchUrl(params.url, { maxChars: params.maxChars, signal });
+      const { text: _text, ...details } = result;
       return {
         content: [{ type: "text", text: truncate(JSON.stringify(result, null, 2)) }],
-        details: result,
+        details,
       };
     },
   });
@@ -374,9 +375,11 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
       if (result.code !== 0) throw new Error(result.stderr || `Research browser exited with code ${result.code}`);
       let parsed: unknown;
       try { parsed = JSON.parse(result.stdout); } catch { throw new Error(`Research browser returned invalid JSON: ${result.stdout.slice(0, 500)}`); }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Research browser returned a non-object payload.");
+      const { text: _text, ...metadata } = parsed as Record<string, unknown>;
       return {
         content: [{ type: "text", text: truncate(JSON.stringify(parsed, null, 2)) }],
-        details: { ...(parsed as Record<string, unknown>), purpose: params.purpose },
+        details: { ...metadata, purpose: params.purpose },
       };
     },
   });

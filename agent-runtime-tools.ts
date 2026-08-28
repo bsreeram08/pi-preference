@@ -153,11 +153,11 @@ export function registerAgentRuntimeTools(pi: ExtensionAPI, options: RegisterAge
   pi.registerTool({
     name: "workbench_agent_focus",
     label: "Focus Workbench Agent",
-    description: "Focus one first-party Workbench agent in the existing dashboard. cmux surfaces are deferred to the next slice.",
+    description: "Focus one first-party Workbench agent in the dashboard and its recorded cmux tab when available.",
     parameters: Type.Object({ runId: Type.String({ minLength: 1, maxLength: 128 }) }),
     async execute(_toolCallId, params) {
       manager.focus(params.runId);
-      return { content: [{ type: "text", text: `Focused ${params.runId} in the Workbench dashboard.` }], details: { runId: params.runId } };
+      return { content: [{ type: "text", text: `Focused ${params.runId} in the Workbench dashboard and requested its cmux tab when available.` }], details: { runId: params.runId } };
     },
   });
 }

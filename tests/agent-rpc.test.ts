@@ -4,6 +4,7 @@ import {
   AgentRpcConnection,
   AgentRpcProtocolError,
   JsonlFrameDecoder,
+  MAX_AGENT_RPC_FRAME_BYTES,
   parseAgentRpcFrame,
 } from "../agent-rpc.ts";
 
@@ -17,6 +18,14 @@ describe("Agent RPC framing", () => {
     expect(first).toEqual([]);
     expect(second).toHaveLength(1);
     expect(JSON.parse(second[0]).text).toBe("left right end");
+  });
+
+  test("accepts bounded large Pi events while retaining a hard frame cap", () => {
+    expect(MAX_AGENT_RPC_FRAME_BYTES).toBe(4 * 1024 * 1024);
+    const decoder = new JsonlFrameDecoder();
+    const frame = `${JSON.stringify({ type: "message_update", payload: "x".repeat(300 * 1024) })}\n`;
+    expect(decoder.push(frame)).toHaveLength(1);
+    expect(new JsonlFrameDecoder(8).push("12345678\nabcdefgh\n")).toEqual(["12345678", "abcdefgh"]);
   });
 
   test("rejects malformed, unknown, oversized, and unterminated frames", () => {

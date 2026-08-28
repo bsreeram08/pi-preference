@@ -1,6 +1,6 @@
 # First-party memory and interactive-agent roadmap
 
-> Status: architecture exploration plus the first Agent Runtime implementation slice. No external reference package was installed or executed. Session Observations, cmux child surfaces, persistent mutation agents, and final third-party package removal remain future slices.
+> Status: architecture exploration plus the first Agent Runtime and cmux per-agent viewer slices. No external reference package was installed or executed. Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
 > Reference snapshots: `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, and its cited upstream cmux adapter at `HazAT/pi-interactive-subagents@c100577ebf73`.
 
 ## Decision
@@ -290,18 +290,20 @@ The installed cmux CLI supports the required primitives:
 - `identify`
 - workspace status, progress, logs, and notifications.
 
-Do not launch the child agent by typing a generated shell command into cmux. Instead:
+Do not launch the child agent by typing a generated shell command into cmux. The installed cmux `new-surface` interface does not accept a terminal command, so terminal-tab launch would require exactly the shell typing this design rejects. Instead:
 
 1. The authoritative manager starts and owns the RPC child.
-2. Workbench optionally creates a cmux terminal surface with focus disabled.
-3. The surface runs a small first-party `workbench-agent-view` client identified only by a run ID and private capability reference.
-4. The viewer connects to the manager over a local authenticated channel, renders bounded transcript/activity, and forwards explicit user controls.
-5. Closing the surface detaches the view; the child keeps running.
-6. Missing cmux degrades to the existing dashboard without affecting execution.
+2. Workbench resolves the caller's exact workspace and pane with `cmux identify`.
+3. Workbench atomically creates a bounded 0600 HTML projection under the run's private 0700 directory.
+4. `new-surface --type browser --pane <caller> --workspace <caller> --url <private-file-url> --focus false` opens a new tab in the same workspace/pane.
+5. The local page refreshes once per second; manager projections update the private file without putting output in cmux process arguments.
+6. `workbench_agent_focus` targets the recorded surface explicitly. All steer/answer/cancel controls remain in Pi's authoritative dashboard.
+7. Closing the tab detaches only the view; the child keeps running.
+8. Missing cmux degrades to the existing dashboard without affecting execution.
 
-No prompt, output, credential, tool name, raw error, or task text belongs in cmux command arguments, titles, status pills, logs, or notifications. Use the approved title grammar `<project or work name> · <lifecycle state>`, for example `Background work · done` or `Researcher 2 · waiting`.
+No prompt, output, credential, tool name, raw error, or task text belongs in cmux command arguments, titles, status pills, logs, or notifications. The private local page may display bounded assistant output and the active parent question; this is explicit local viewing under the same-user trust model. Use the approved title grammar `<allowlisted work category> · <lifecycle state>`; unknown or model-selected roles become `Specialist`, for example `Background work · done` or `Researcher · waiting`.
 
-Keep existing dashboard focus behavior (`Ctrl+Alt+Down` / `Ctrl+Alt+Up`). `workbench_agent_focus` may create or focus the optional cmux viewer without making cmux mandatory.
+Use `Ctrl+Alt+A` as a single dashboard focus toggle; `Escape` also returns to the editor. `workbench_agent_focus` focuses the optional cmux viewer without making cmux mandatory.
 
 ## Replacing `pi-subagents`
 
