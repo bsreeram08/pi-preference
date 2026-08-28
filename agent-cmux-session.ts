@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentRunPaths } from "./agent-run-store.ts";
 import { createCmuxOutputRunner, type CmuxOutputRunner } from "./cmux-workbench.ts";
+import { deriveCmuxWorkIdentity } from "./cmux-naming.ts";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 export const CMUX_AGENT_BRIDGE_PATH = path.join(ROOT, "agent-cmux-bridge.mjs");
@@ -53,6 +54,7 @@ export interface CmuxSessionPrepareInput {
   readonly agentId: string;
   readonly paths: AgentRunPaths;
   readonly projectRoot: string;
+  readonly task: string;
   readonly piInvocation: { readonly command: string; readonly args: string[] };
   readonly childEnvironment: NodeJS.ProcessEnv;
 }
@@ -153,10 +155,16 @@ export class CmuxAgentSessionHost implements AgentSessionHost {
     // roots intentionally include long project/run identifiers. Keep only the
     // authenticated transport endpoint in the short system temp directory.
     const socketPath = path.join(os.tmpdir(), `pi-wb-${randomBytes(8).toString("hex")}.sock`);
+    const identity = deriveCmuxWorkIdentity({
+      cwd: input.projectRoot,
+      task: input.task,
+      role: categoricalAgentTitle(input.agentId),
+    });
     const config = {
       version: 1,
       runId: input.runId,
-      title: categoricalAgentTitle(input.agentId),
+      title: identity.title,
+      description: identity.description,
       projectRoot: input.projectRoot,
       runRoot: input.paths.root,
       launcherPath,

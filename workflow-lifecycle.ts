@@ -13,8 +13,6 @@ export interface WorkflowLifecycleEvent {
 }
 
 export interface WorkflowLifecycleMetadata {
-  readonly title: string;
-  readonly description: string;
   readonly progress: number;
   readonly progressLabel: string;
   readonly status: "working" | "needs attention" | "blocked" | "done" | "failed" | "cancelled" | "interrupted";
@@ -23,16 +21,11 @@ export interface WorkflowLifecycleMetadata {
   readonly level: "progress" | "warning" | "error" | "success";
 }
 
-const PHASE_TITLE: Record<WorkflowLifecyclePhase, string> = {
-  session: "Pi session",
-  planning: "Workflow planning",
-  execution: "Workflow execution",
-  delegation: "Workflow delegation",
-  council: "Council implementation",
-  background: "Background work",
-};
+const PHASES = new Set<WorkflowLifecyclePhase>([
+  "session", "planning", "execution", "delegation", "council", "background",
+]);
 
-const STATE_METADATA: Record<WorkflowLifecycleState, Omit<WorkflowLifecycleMetadata, "title" | "description">> = {
+const STATE_METADATA: Record<WorkflowLifecycleState, WorkflowLifecycleMetadata> = {
   running: { progress: 0.35, progressLabel: "Pi · working", status: "working", icon: "sparkle", color: "#FF8A4C", level: "progress" },
   needs_attention: { progress: 0.85, progressLabel: "Pi · needs attention", status: "needs attention", icon: "exclamationmark.triangle", color: "#E7B84B", level: "warning" },
   blocked: { progress: 0.85, progressLabel: "Pi · blocked", status: "blocked", icon: "exclamationmark.octagon", color: "#E85D5D", level: "error" },
@@ -74,18 +67,12 @@ export function decodeWorkflowLifecycleEvent(value: unknown): WorkflowLifecycleE
   const allowed = new Set(["schemaVersion", "type", "phase", "state", "errorCode"]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
   if (value.schemaVersion !== 1 || value.type !== "workflow-lifecycle") return undefined;
-  if (typeof value.phase !== "string" || !(value.phase in PHASE_TITLE)) return undefined;
+  if (typeof value.phase !== "string" || !PHASES.has(value.phase as WorkflowLifecyclePhase)) return undefined;
   if (typeof value.state !== "string" || !(value.state in STATE_METADATA)) return undefined;
   if (value.errorCode !== undefined && (typeof value.errorCode !== "string" || !ERROR_CODES.has(value.errorCode as WorkflowLifecycleErrorCode))) return undefined;
   return value as unknown as WorkflowLifecycleEvent;
 }
 
 export function workflowLifecycleMetadata(event: WorkflowLifecycleEvent): WorkflowLifecycleMetadata {
-  const state = STATE_METADATA[event.state];
-  const title = PHASE_TITLE[event.phase];
-  return {
-    title,
-    description: `${title}: ${state.status}`,
-    ...state,
-  };
+  return STATE_METADATA[event.state];
 }

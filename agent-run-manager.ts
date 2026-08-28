@@ -426,7 +426,7 @@ export class AgentRunManager {
     let launch: { invocation: { command: string; args: readonly string[] }; environment: NodeJS.ProcessEnv };
     try {
       launch = this.sessionHost
-        ? await this.sessionHost.prepare({ runId, agentId: request.agent.id, paths, projectRoot, piInvocation, childEnvironment })
+        ? await this.sessionHost.prepare({ runId, agentId: request.agent.id, paths, projectRoot, task: request.task, piInvocation, childEnvironment })
         : { invocation: piInvocation, environment: childEnvironment };
     } catch (error) {
       const { checksum: _checksum, ...current } = baseRecord;
@@ -459,6 +459,11 @@ export class AgentRunManager {
     let resolveLoadout!: () => void;
     let rejectLoadout!: (error: Error) => void;
     const loadoutReady = new Promise<void>((ok, fail) => { resolveLoadout = ok; rejectLoadout = fail; });
+    // The child can emit its loadout synchronously before startup persistence
+    // reaches the later Promise.race. Observe early rejection immediately so
+    // stricter runtimes do not classify that handled protocol failure as an
+    // unhandled rejection; awaiting loadoutReady below still rejects normally.
+    void loadoutReady.catch(() => undefined);
     const active: ActiveRun = {
       request: { ...request, projectRoot }, paths, child, rpc, completion, resolve, reject,
       record: baseRecord, persistChain: Promise.resolve(), stderr: "", latestAssistant: "", currentAssistant: "",

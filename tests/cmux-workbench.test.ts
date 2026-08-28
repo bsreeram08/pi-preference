@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { deriveCmuxWorkIdentity } from "../cmux-naming.ts";
 import {
   CmuxTaskBridge,
   cmuxTitle,
@@ -53,7 +54,10 @@ describe("cmux workbench bridge", () => {
   test("accepts only the versioned categorical lifecycle contract", () => {
     const event = createWorkflowLifecycleEvent("execution", "running");
     expect(decodeWorkflowLifecycleEvent(event)).toEqual(event);
-    expect(cmuxTitle(event)).toBe("Workflow execution · working");
+    expect(cmuxTitle(deriveCmuxWorkIdentity({ cwd: "/work/pi-workbench", task: "Improve cmux task naming" }))).toBe("Pi Workbench · Improve cmux task naming");
+    const privateIdentity = deriveCmuxWorkIdentity({ cwd: "/work/pi-workbench", task: "Rotate production API key sentinel-123" });
+    expect(privateIdentity).toMatchObject({ title: "Pi Workbench", description: "Pi Workbench workspace" });
+    expect(JSON.stringify(privateIdentity)).not.toContain("sentinel-123");
     expect(decodeWorkflowLifecycleEvent({ ...event, detail: "not allowed" })).toBeUndefined();
     expect(decodeWorkflowLifecycleEvent({ ...event, phase: "custom" })).toBeUndefined();
     expect(decodeWorkflowLifecycleEvent({ ...event, errorCode: "raw failure" })).toBeUndefined();
@@ -61,13 +65,59 @@ describe("cmux workbench bridge", () => {
     expect(decodeWorkflowLifecycleEvent({ ...event, evidence: "evidence-sentinel" })).toBeUndefined();
   });
 
+  test("fails closed for bare credential formats in task identities", () => {
+    const credentials = [
+      `ghp_${"A".repeat(36)}`,
+      `AKIA${"A".repeat(16)}`,
+      `AIza${"A".repeat(35)}`,
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue",
+      "aB3_".repeat(10),
+    ];
+
+    for (const credential of credentials) {
+      const identity = deriveCmuxWorkIdentity({ cwd: "/work/pi-workbench", task: `Deploy ${credential} now` });
+      expect(identity).toMatchObject({ title: "Pi Workbench", description: "Pi Workbench workspace" });
+      expect(JSON.stringify(identity)).not.toContain(credential);
+    }
+  });
+
+  test("falls back for unsafe project directory basenames", () => {
+    const unsafeBasenames = [
+      `AKIA${"A".repeat(16)}`,
+      "project\ncontrol",
+      "<unsafe-project>",
+    ];
+
+    for (const basename of unsafeBasenames) {
+      const identity = deriveCmuxWorkIdentity({ cwd: `/work/${basename}`, task: "Review deployment status" });
+      expect(identity).toMatchObject({ project: "Project", title: "Project · Review deployment status" });
+      expect(JSON.stringify(identity)).not.toContain(basename);
+    }
+  });
+
+  test("bounds cmux identity fields by UTF-8 bytes", () => {
+    const identity = deriveCmuxWorkIdentity({
+      cwd: `/work/${"项目".repeat(40)}`,
+      task: `检查${"国际化任务".repeat(60)}`,
+      role: "Researcher",
+    });
+
+    expect(Buffer.byteLength(identity.title, "utf8")).toBeLessThanOrEqual(128);
+    expect(Buffer.byteLength(identity.description, "utf8")).toBeLessThanOrEqual(256);
+    expect(identity.title.endsWith("…")).toBe(true);
+    expect(identity.description.endsWith("…")).toBe(true);
+  });
+
   test("targets the explicit workspace and surface with fixed metadata", async () => {
     const commands: string[][] = [];
+    const identity = deriveCmuxWorkIdentity({ cwd: "/work/pi-workbench", task: "Improve cmux task naming" });
     const bridge = new CmuxTaskBridge(
       { workspaceId: "workspace:7", surfaceId: "surface:3" },
       async (args) => { commands.push([...args]); return true; },
+      identity,
     );
     const running = createWorkflowLifecycleEvent("planning", "running");
+    bridge.identify(identity);
     bridge.transition(running);
     bridge.activity();
     bridge.transition(createWorkflowLifecycleEvent("planning", "completed"), true);
@@ -75,22 +125,27 @@ describe("cmux workbench bridge", () => {
     await bridge.flush();
 
     expect(commands).toContainEqual([
-      "rename-tab", "--workspace", "workspace:7", "--surface", "surface:3", "--title", "Workflow planning · working",
+      "rename-tab", "--workspace", "workspace:7", "--surface", "surface:3", "--title", "Pi Workbench · Improve cmux task naming",
     ]);
     expect(commands).toContainEqual([
-      "workspace-action", "--workspace", "workspace:7", "--action", "set-description", "--description", "Workflow planning: working",
+      "workspace-action", "--workspace", "workspace:7", "--action", "set-description", "--description", "Improve cmux task naming",
     ]);
     expect(commands).toContainEqual([
       "set-progress", "0.55", "--label", "Pi · working", "--workspace", "workspace:7",
     ]);
     expect(commands).toContainEqual([
-      "notify", "--title", "Workflow planning", "--subtitle", "done", "--body", "Workflow planning: done", "--workspace", "workspace:7", "--surface", "surface:3",
+      "notify", "--title", "Pi Workbench · Improve cmux task naming", "--subtitle", "done", "--body", "Improve cmux task naming", "--workspace", "workspace:7", "--surface", "surface:3",
     ]);
     expect(commands).toContainEqual(["clear-progress", "--workspace", "workspace:7"]);
+    expect(commands.filter(([name]) => name === "rename-tab")).toHaveLength(1);
+    expect(commands.filter((args) => args.includes("set-description"))).toHaveLength(1);
+    expect(commands.filter(([name]) => name === "rename-tab").flat().join(" ")).not.toMatch(/working|done|completed/i);
   });
 
   test("never forwards sentinel secrets from prompt or extension event payloads", async () => {
     const secret = "SENTINEL-WORKFLOW-SECRET-9f31";
+    const projectIdentity = deriveCmuxWorkIdentity({ cwd: ROOT });
+    const backgroundIdentity = deriveCmuxWorkIdentity({ cwd: ROOT, task: "Check football fixtures", role: "Background task" });
     const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
     const bus = new Map<string, Array<(payload: unknown) => unknown>>();
     const commands: string[][] = [];
@@ -107,6 +162,7 @@ describe("cmux workbench bridge", () => {
     } as any;
     const ctx = {
       hasUI: true,
+      cwd: ROOT,
       isIdle: () => true,
       ui: { setTitle(value: string) { titles.push(value); } },
     };
@@ -126,6 +182,10 @@ describe("cmux workbench bridge", () => {
       schema_version: "pi-background-tasks.extension-terminal.v1",
       task: { id: "background-1", status: "failed", error: secret, detail: secret, summary: secret, name: secret },
     });
+    bus.get("pi-background-tasks:terminal:v1")?.[0]?.({
+      schema_version: "pi-background-tasks.extension-terminal.v1",
+      task: { id: "background-2", status: "failed", name: "Check football fixtures" },
+    });
     bus.get(WORKFLOW_LIFECYCLE_EVENT)?.[0]?.({
       ...createWorkflowLifecycleEvent("execution", "failed", "operational_failure"),
       detail: secret,
@@ -141,7 +201,11 @@ describe("cmux workbench bridge", () => {
     const observableCmuxData = [...commands.flat(), ...titles].join("\n");
     expect(observableCmuxData).not.toContain(secret);
     expect(commands.some(([command]) => command === "notify")).toBe(true);
-    expect(commands.some((args) => args.includes("Workflow execution: done"))).toBe(true);
+    expect(commands).toContainEqual([
+      "notify", "--title", backgroundIdentity.title, "--subtitle", "failed",
+      "--body", backgroundIdentity.description, "--workspace", "workspace:1", "--surface", "surface:2",
+    ]);
+    expect(commands.some((args) => args.includes(`${projectIdentity.title}: done`))).toBe(true);
   });
 
   test("deduplicates one supervisor request but keeps distinct requests actionable", async () => {

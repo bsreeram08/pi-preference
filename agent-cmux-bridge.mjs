@@ -55,9 +55,11 @@ async function readConfig(configPath) {
     raw = await handle.readFile("utf8");
   } finally { await handle.close(); }
   const value = JSON.parse(raw);
-  const stringKeys = ["runId", "title", "projectRoot", "runRoot", "launcherPath", "socketPath", "surfaceRecord", "questionStateFile", "authToken", "cmuxCommand", "piCommand"];
+  const stringKeys = ["runId", "title", "description", "projectRoot", "runRoot", "launcherPath", "socketPath", "surfaceRecord", "questionStateFile", "authToken", "cmuxCommand", "piCommand"];
   if (value.version !== 1 || stringKeys.some((key) => typeof value[key] !== "string" || !value[key])
-    || !RUN_ID.test(value.runId) || !["Codebase Explorer", "Researcher", "Technical Reviewer", "Requirements Analyst", "Planner", "Quality Reviewer", "Execution Manager", "Implementer", "Task Implementer", "Council Supervisor", "Product Advisor", "Opponent", "Architect", "Developer", "UX Advisor", "Security Reviewer", "QA Reviewer", "Hiring Advisor", "Specialist"].includes(value.title)
+    || !RUN_ID.test(value.runId)
+    || Buffer.byteLength(value.title, "utf8") > 128 || Buffer.byteLength(value.description, "utf8") > 256
+    || /[\u0000-\u001f\u007f-\u009f]/.test(value.title) || /[\u0000-\u001f\u007f-\u009f]/.test(value.description)
     || !path.isAbsolute(value.projectRoot) || !path.isAbsolute(value.runRoot) || !path.isAbsolute(value.cmuxCommand)
     || !Array.isArray(value.piArgs) || value.piArgs.some((item) => typeof item !== "string")
     || !value.childEnvironment || typeof value.childEnvironment !== "object" || Array.isArray(value.childEnvironment)
@@ -192,9 +194,16 @@ async function main() {
   let shutdownTimer;
   let lastQuestionState;
 
-  const renameRecordedSurface = async (state) => {
-    if (!surface || !caller || !["running", "waiting", "done", "failed"].includes(state)) return;
-    await run(config.cmuxCommand, ["rename-tab", "--workspace", caller.workspace, "--surface", surface.surface, "--title", `${config.title} · ${state}`]);
+  const notifyQuestion = async () => {
+    if (!surface || !caller) return;
+    await run(config.cmuxCommand, [
+      "notify",
+      "--title", config.title,
+      "--subtitle", "needs attention",
+      "--body", config.description,
+      "--workspace", caller.workspace,
+      "--surface", surface.surface,
+    ]);
   };
   const closeRecordedSurface = async () => {
     if (!surface || !caller) return true;
@@ -248,12 +257,10 @@ async function main() {
           }
           if (frame.type === "event") {
             if (!frame.event || typeof frame.event !== "object" || !EVENT_TYPES.has(frame.event.type)) throw new Error("unsupported_event");
-            if (frame.event.type === "agent_start") void renameRecordedSurface("running");
             if (frame.event.type === "agent_settled" && frame.event.stopReason === "aborted") {
               // An interactive Escape/abort means "wait for another prompt", not
               // final completion. AgentRunManager treats every agent_settled RPC
               // event as terminal, so keep this local to the terminal host.
-              void renameRecordedSurface("waiting");
               continue;
             }
             writeRpc(frame.event);
@@ -271,7 +278,6 @@ async function main() {
             if (normalSettlement) throw new Error("duplicate_settlement");
             if (!frame.event || frame.event.type !== "agent_settled" || typeof frame.text !== "string" || !frame.state || typeof frame.state !== "object") throw new Error("invalid_settlement");
             normalSettlement = true; finalText = frame.text; finalState = frame.state;
-            void renameRecordedSurface("done");
             writeRpc(frame.event);
             continue;
           }
@@ -310,7 +316,7 @@ async function main() {
   surface = createdResult.ok ? parseSurface(createdResult.stdout) : undefined;
   if (!surface || surface.workspace !== caller.workspace || surface.pane !== caller.pane) throw new Error("cmux_surface_failed");
   await atomicWrite(config.surfaceRecord, `${JSON.stringify({ version: 1, runId: config.runId, ...surface })}\n`, 0o600);
-  const renamed = await run(config.cmuxCommand, ["rename-tab", "--workspace", caller.workspace, "--surface", surface.surface, "--title", `${config.title} · running`]);
+  const renamed = await run(config.cmuxCommand, ["rename-tab", "--workspace", caller.workspace, "--surface", surface.surface, "--title", config.title]);
   if (!renamed.ok) throw new Error("cmux_title_failed");
   await atomicWrite(config.launcherPath, launcherText(config), 0o700);
   const launcherCommand = `bash ${shellQuote(config.launcherPath)}\n`;
@@ -326,7 +332,7 @@ async function main() {
     const questionState = await readQuestionState(config);
     if (questionState && questionState !== lastQuestionState) {
       lastQuestionState = questionState;
-      await renameRecordedSurface(questionState);
+      if (questionState === "waiting") await notifyQuestion();
     }
     const listed = await run(config.cmuxCommand, ["list-pane-surfaces", "--workspace", caller.workspace, "--pane", caller.pane], 2_000);
     if (!listed.ok || !surfaceListed(listed.stdout, surface.surface)) {
