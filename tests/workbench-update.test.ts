@@ -16,7 +16,7 @@ import {
 } from "../workbench-update.ts";
 
 const PROJECT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-preference.git";
+const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-workbench.git";
 const TRUSTED_REPROMPTER = "https://github.com/AytuncYildizli/reprompter.git";
 const roots: string[] = [];
 
@@ -448,18 +448,18 @@ describe("Pi Workbench updater status trust and channel policy", () => {
   test("rejects hostile or multiple remotes, dirty state, linked worktrees, detached/non-main branches, and invalid profiles", async () => {
     const hostile = await createFixture();
     for (const url of [
-      "https://user:secret@github.com/bsreeram08/pi-preference.git",
-      "http://github.com/bsreeram08/pi-preference.git",
-      "ssh://git@github.com/bsreeram08/pi-preference.git",
-      "git@github.com:bsreeram08/pi-preference.git",
-      "https://github.com:443/bsreeram08/pi-preference.git",
-      "https://github.com/bsreeram08/pi-preference.git?ref=main",
-      "https://github.com/bsreeram08/pi-preference.git#main",
-      "https://github.com/bsreeram08/pi%2dpreference.git",
-      "https://github.com\\bsreeram08\\pi-preference.git",
-      "https://www.github.com/bsreeram08/pi-preference.git",
+      "https://user:secret@github.com/bsreeram08/pi-workbench.git",
+      "http://github.com/bsreeram08/pi-workbench.git",
+      "ssh://git@github.com/bsreeram08/pi-workbench.git",
+      "git@github.com:bsreeram08/pi-workbench.git",
+      "https://github.com:443/bsreeram08/pi-workbench.git",
+      "https://github.com/bsreeram08/pi-workbench.git?ref=main",
+      "https://github.com/bsreeram08/pi-workbench.git#main",
+      "https://github.com/bsreeram08/pi%2dworkbench.git",
+      "https://github.com\\bsreeram08\\pi-workbench.git",
+      "https://www.github.com/bsreeram08/pi-workbench.git",
       "https://github.com/bsreeram08/other.git",
-      "https://github.com/bsreeram08/pi-preference.git//",
+      "https://github.com/bsreeram08/pi-workbench.git//",
     ]) {
       git(hostile.root, "remote", "set-url", "origin", url);
       expect(await hostile.updater(fakeReleases([])).status()).toMatchObject({ code: "ORIGIN_UNTRUSTED" });

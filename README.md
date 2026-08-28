@@ -1,6 +1,6 @@
 # Sreeram's Pi Workbench
 
-[![CI](https://github.com/bsreeram08/pi-preference/actions/workflows/ci.yml/badge.svg)](https://github.com/bsreeram08/pi-preference/actions/workflows/ci.yml)
+[![CI](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FF8A4C.svg)](LICENSE)
 
 A preference-aware [Pi](https://github.com/earendil-works/pi) capability workbench for intent clarification, evidence-backed research, planning, delegated implementation, independent verification, durable agent memory, explicit preferences, and trusted skill evolution.
@@ -43,7 +43,7 @@ Clone over public HTTPS directly into Pi's extension directory:
 ```bash
 mkdir -p "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions"
 git clone --recurse-submodules \
-  https://github.com/bsreeram08/pi-preference.git \
+  https://github.com/bsreeram08/pi-workbench.git \
   "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 cd "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/extensions/pi-workbench"
 ./install.sh
@@ -89,7 +89,7 @@ The checker reads only the manifest and allowlisted capability metadata in `sett
 
 ### Update
 
-On each interactive Pi launch, Workbench performs one optional fail-soft update check. If the installed checkout is behind the trusted `bsreeram08/pi-preference` source, it shows the exact old/new commits and asks before applying; it never silently updates. Declining suppresses duplicate prompts for that candidate during the current runtime. Offline mode, network errors, unavailable UI, locks, and no-update results leave startup untouched.
+On each interactive Pi launch, Workbench performs one optional fail-soft update check. If the installed checkout is behind the trusted `bsreeram08/pi-workbench` source, it shows the exact old/new commits and asks before applying; it never silently updates. Declining suppresses duplicate prompts for that candidate during the current runtime. Offline mode, network errors, unavailable UI, locks, and no-update results leave startup untouched.
 
 Run `/workbench-update` (or `/workbench-update status`) for an explicit status check. It reports the current commit/version, selected stable release—or trusted `main` when no stable release exists—install profile, and a categorical blocked/no-update/update-available result. Trusted `main` remains a repeatable channel so older installations can discover later changes; a stable release always wins when present. The bounded private audit ledger is still validated before main-channel use, and malformed, symlinked, non-private, or oversized audit state blocks.
 

@@ -6,7 +6,7 @@ Please do not open a public issue for a suspected vulnerability or include crede
 
 Use GitHub's private vulnerability reporting flow:
 
-<https://github.com/bsreeram08/pi-preference/security/advisories/new>
+<https://github.com/bsreeram08/pi-workbench/security/advisories/new>
 
 Include the affected Workbench and Pi versions, operating system, impact, minimal reproduction, and any suggested mitigation. Redact all credentials and personal or proprietary data. The maintainer will acknowledge and triage reports as availability permits.
 
