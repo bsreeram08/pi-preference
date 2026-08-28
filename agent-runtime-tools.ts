@@ -44,11 +44,12 @@ export function registerAgentRuntimeTools(pi: ExtensionAPI, options: RegisterAge
   pi.registerTool({
     name: "workbench_agent_start",
     label: "Start Workbench Agent",
-    description: "Start one persistent, read-only first-party Workbench agent in the background. Returns after the prompt is accepted; completion is delivered once for the overall run.",
+    description: "Start one persistent, read-only first-party Workbench agent. Inside cmux it opens the actual interactive Pi TUI in a new unfocused terminal tab; otherwise it uses the headless compatibility runtime. Returns after the prompt is accepted.",
     promptSnippet: "Start a persistent first-party Workbench child agent",
     promptGuidelines: [
       "Use workbench_agent_start when a read-only specialist should remain independently steerable or may need to ask the parent a question; use delegate_task for ordinary run-to-result delegation.",
-      "Workbench agent runs are first-party RPC children. The initial slice permits only Bash-free read-only profiles and does not permit persistent mutation-capable agents.",
+      "Inside cmux, Workbench agent runs are real interactive Pi TUI sessions controlled through a private authenticated bridge; focus the tab to chat directly. Outside cmux, the first-party headless RPC executor remains available for compatibility.",
+      "The initial public slice permits only Bash-free read-only profiles and does not permit persistent mutation-capable agents.",
     ],
     parameters: Type.Object({
       agent: AgentSchema,
@@ -127,7 +128,7 @@ export function registerAgentRuntimeTools(pi: ExtensionAPI, options: RegisterAge
   pi.registerTool({
     name: "workbench_agent_answer",
     label: "Answer Workbench Agent",
-    description: "Answer the exact active parent question for a waiting first-party Workbench agent.",
+    description: "Answer the exact active parent question for a headless Workbench agent. Interactive cmux children ask directly in their Pi TUI tab.",
     parameters: Type.Object({
       runId: Type.String({ minLength: 1, maxLength: 128 }),
       questionId: Type.String({ minLength: 1, maxLength: 128 }),
@@ -153,7 +154,7 @@ export function registerAgentRuntimeTools(pi: ExtensionAPI, options: RegisterAge
   pi.registerTool({
     name: "workbench_agent_focus",
     label: "Focus Workbench Agent",
-    description: "Focus one first-party Workbench agent in the dashboard and its recorded cmux tab when available.",
+    description: "Focus one first-party Workbench agent in the dashboard and its recorded cmux tab (the interactive terminal) when available.",
     parameters: Type.Object({ runId: Type.String({ minLength: 1, maxLength: 128 }) }),
     async execute(_toolCallId, params) {
       manager.focus(params.runId);

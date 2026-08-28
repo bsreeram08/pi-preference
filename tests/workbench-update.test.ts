@@ -334,36 +334,36 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     expect(requested[1]?.endsWith("&page=2")).toBe(true);
   });
 
-  test("bootstraps only from hardcoded main when the API successfully has zero stable releases", async () => {
+  test("selects hardcoded main when the API successfully has zero stable releases", async () => {
     const fixture = await createFixture();
     const status = await fixture.updater(fakeReleases([
       release("v2.0.0-rc.1"),
       release("v1.0.0", { draft: true }),
     ])).status();
-    expect(status).toMatchObject({ category: "update-available", channel: "main-bootstrap", candidate: "main", candidateCommit: fixture.candidate });
+    expect(status).toMatchObject({ category: "update-available", channel: "main", candidate: "main", candidateCommit: fixture.candidate });
     const fetchCall = fixture.calls.find((item) => item.command === "env" && item.args.includes("fetch"));
     expect(fetchCall?.args).toContain("+refs/heads/main:refs/pi-workbench-updater/candidate");
   });
 
-  test("consumes main bootstrap after one success, while a later stable release still wins", async () => {
+  test("allows repeated trusted main updates while a later stable release still wins", async () => {
     const fixture = await createFixture();
     const emptyReleases = fakeReleases([]);
     expect(await apply(fixture.updater(emptyReleases))).toMatchObject({
       category: "updated",
       code: "UPDATED",
-      channel: "main-bootstrap",
+      channel: "main",
     });
 
     const nextMain = await commitInSource(fixture, "second-main", "1.2.0");
     fixture.pushMain();
     fixture.calls.length = 0;
     expect(await fixture.updater(emptyReleases).status()).toMatchObject({
-      category: "no-update",
-      code: "BOOTSTRAP_CONSUMED",
-      channel: "main-bootstrap",
+      category: "update-available",
+      code: "READY",
+      channel: "main",
+      candidateCommit: nextMain,
     });
-    expect(fixture.calls.some((item) => item.args.includes("fetch"))).toBe(false);
-    expect(fixture.calls.some((item) => item.command === path.join(fixture.root, "install.sh"))).toBe(false);
+    expect(fixture.calls.some((item) => item.args.includes("fetch"))).toBe(true);
 
     fixture.tag("v1.2.0", nextMain);
     expect(await fixture.updater(fakeReleases([release("v1.2.0")])).status()).toMatchObject({
@@ -374,11 +374,11 @@ describe("Pi Workbench updater status trust and channel policy", () => {
     });
   }, 15_000);
 
-  test("uses the final outcome per backup when deciding whether bootstrap was consumed", async () => {
+  test("valid historical audit outcomes do not suppress later trusted main updates", async () => {
     const fixture = await createFixture();
     const emptyReleases = fakeReleases([]);
     const first = await apply(fixture.updater(emptyReleases));
-    expect(first).toMatchObject({ category: "updated", channel: "main-bootstrap" });
+    expect(first).toMatchObject({ category: "updated", channel: "main" });
     const auditPath = path.join(fixture.agentDir, "update", "pi-workbench", "audit.jsonl");
     const records = (await fs.readFile(auditPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
     const success = records.find((record) => record.outcome === "SUCCESS")!;
@@ -389,17 +389,17 @@ describe("Pi Workbench updater status trust and channel policy", () => {
       checkoutRecovery: "FAILED_CHECKOUT_PRESERVED",
     })}\n`);
 
-    const nextMain = await commitInSource(fixture, "bootstrap-after-rollback", "1.2.0");
+    const nextMain = await commitInSource(fixture, "main-after-rollback", "1.2.0");
     fixture.pushMain();
     expect(await fixture.updater(emptyReleases).status()).toMatchObject({
       category: "update-available",
       code: "READY",
-      channel: "main-bootstrap",
+      channel: "main",
       candidateCommit: nextMain,
     });
   });
 
-  test("fails closed on malformed, symlinked, or oversized bootstrap audit state", async () => {
+  test("fails closed on malformed, symlinked, or oversized main-channel audit state", async () => {
     for (const kind of ["malformed", "symlink", "oversize"] as const) {
       const fixture = await createFixture();
       const auditPath = path.join(fixture.agentDir, "update", "pi-workbench", "audit.jsonl");
@@ -1296,6 +1296,75 @@ describe("/workbench-update command UX", () => {
     await commands.get("workbench-update")!("apply", ctx);
     expect(events).toEqual(["apply", "notify", "reload"]);
     expect(events.filter((item) => item === "reload")).toHaveLength(1);
+  });
+
+  test("prompts once on launch for an available trusted update and reloads only after confirmed success", async () => {
+    const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+    let sessionStart: ((event: unknown, ctx: any) => void) | undefined;
+    let statusCalls = 0;
+    let applyCalls = 0;
+    const updater = {
+      async status(): Promise<WorkbenchUpdateStatus> {
+        statusCalls += 1;
+        return { category: "update-available", code: "READY", candidateCommit: "b".repeat(40), channel: "main", candidate: "main" };
+      },
+      async apply(interaction: { confirm: (title: string, message: string) => Promise<boolean> }): Promise<WorkbenchApplyResult> {
+        applyCalls += 1;
+        expect(await interaction.confirm("Apply Pi Workbench update?", "candidate")).toBe(true);
+        return { category: "updated", code: "UPDATED", reload: true, oldCommit: "a".repeat(40), newCommit: "b".repeat(40) };
+      },
+    } as WorkbenchUpdateRunner;
+    registerWorkbenchUpdate({
+      registerCommand(name: string, value: { handler: (args: string, ctx: any) => Promise<void> }) { commands.set(name, value.handler); },
+      on(event: string, handler: (event: unknown, ctx: any) => void) { if (event === "session_start") sessionStart = handler; },
+    } as any, { root: "/fixture", exec: async () => ({ stdout: "", stderr: "", code: 0 }), updater });
+    const events: string[] = [];
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify() { events.push("notify"); },
+        async confirm() { events.push("confirm"); return true; },
+      },
+      async reload() { events.push("reload"); },
+    };
+
+    expect(sessionStart?.({}, ctx)).toBeUndefined();
+    for (let attempt = 0; attempt < 50 && !events.includes("reload"); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 2));
+    expect(events).toContain("confirm");
+    expect(events).toContain("reload");
+    expect(applyCalls).toBe(1);
+    sessionStart?.({}, ctx);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(statusCalls).toBe(2);
+    expect(applyCalls).toBe(1);
+  });
+
+  test("abandons an in-flight startup check when its extension context shuts down", async () => {
+    let sessionStart: ((event: unknown, ctx: any) => void) | undefined;
+    let sessionShutdown: (() => void) | undefined;
+    let finishStatus!: (status: WorkbenchUpdateStatus) => void;
+    let applyCalls = 0;
+    const updater = {
+      status: () => new Promise<WorkbenchUpdateStatus>((resolve) => { finishStatus = resolve; }),
+      async apply(): Promise<WorkbenchApplyResult> {
+        applyCalls += 1;
+        return { category: "updated", code: "UPDATED", reload: true };
+      },
+    } as WorkbenchUpdateRunner;
+    registerWorkbenchUpdate({
+      registerCommand() {},
+      on(event: string, handler: (event: unknown, ctx: any) => void) {
+        if (event === "session_start") sessionStart = handler;
+        if (event === "session_shutdown") sessionShutdown = () => handler({}, {});
+      },
+    } as any, { root: "/fixture", exec: async () => ({ stdout: "", stderr: "", code: 0 }), updater });
+    const ctx = { hasUI: true, ui: { notify() {}, async confirm() { throw new Error("stale context used"); } } };
+
+    sessionStart?.({}, ctx);
+    sessionShutdown?.();
+    finishStatus({ category: "update-available", code: "READY", candidateCommit: "b".repeat(40), channel: "main" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(applyCalls).toBe(0);
   });
 
   test("reload rejection reports installed-on-disk restart guidance without claiming runtime load", async () => {

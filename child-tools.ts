@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +26,39 @@ const MAX_OUTPUT = 48 * 1024;
 const BROWSER_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "research-browser.mjs");
 
 export const CHILD_MEMORY_ACTIONS = ["recall", "remember", "propose_shared", "propose_consolidation", "forget"] as const;
+
+async function writeInteractiveQuestionState(state: "waiting" | "running"): Promise<void> {
+  const file = process.env.PI_WORKBENCH_QUESTION_STATE_FILE;
+  if (!file) return;
+  if (!path.isAbsolute(file) || path.basename(file) !== "question-state.json") throw new Error("Interactive question-state path is invalid.");
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  const handle = await fs.open(
+    temporary,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  try {
+    await handle.writeFile(`${JSON.stringify({ version: 1, runId: process.env.PI_WORKBENCH_RUN_ID, state })}\n`, "utf8");
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await fs.rename(temporary, file);
+    await fs.chmod(file, 0o600);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => undefined);
+  }
+}
+
+export function createParentQuestionGuard(): () => boolean {
+  let used = false;
+  return () => {
+    if (used) return false;
+    used = true;
+    return true;
+  };
+}
 
 export function createToolCallBudgetGuard(rawBudget: string | undefined = process.env.PI_WORKBENCH_TOOL_BUDGET): () => boolean {
   const parsed = rawBudget?.trim() ? Number(rawBudget) : Number.NaN;
@@ -70,6 +105,7 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
   const agentId = workbenchAgentIdFromEnvironment("specialist");
   const memoryStores = new Map<string, WorkbenchMemoryStore>();
   const consumeToolCall = createToolCallBudgetGuard();
+  const consumeParentQuestion = createParentQuestionGuard();
 
   function memoryStoreFor(cwd: string): WorkbenchMemoryStore {
     const requestedRoot = process.env.PI_WORKBENCH_MEMORY_PROJECT_ROOT?.trim() || cwd;
@@ -163,7 +199,16 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
       if (process.env.PI_WORKBENCH_ALLOW_PARENT_QUESTION !== "1") {
         throw new Error("Parent questions are disabled for this delegated run. Return the blocker in your final synthesis instead.");
       }
-      const answer = await ctx.ui.input("Parent answer required", params.question.trim(), { timeout: params.timeoutMs ?? 5 * 60_000 });
+      if (!consumeParentQuestion()) {
+        throw new Error("This delegated run already used its one allowed parent question. Continue with the existing answer or return the blocker in your final synthesis.");
+      }
+      await writeInteractiveQuestionState("waiting");
+      let answer: string | undefined;
+      try {
+        answer = await ctx.ui.input("Parent answer required", params.question.trim(), { timeout: params.timeoutMs ?? 5 * 60_000 });
+      } finally {
+        await writeInteractiveQuestionState("running");
+      }
       if (answer === undefined) throw new Error("The parent question was cancelled or timed out.");
       return {
         content: [{ type: "text", text: answer }],
