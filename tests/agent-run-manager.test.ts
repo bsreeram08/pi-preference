@@ -1,0 +1,399 @@
+import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { AgentRunManager, buildAgentChildEnvironment } from "../agent-run-manager.ts";
+import { AgentRunStore, digestAgentRunText } from "../agent-run-store.ts";
+import type { AgentSpec } from "../types.ts";
+
+const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "fake-agent-rpc.mjs");
+const AGENT: AgentSpec = {
+  id: "planner",
+  title: "Planner",
+  description: "Plans",
+  triggers: [],
+  readOnly: true,
+};
+
+async function setup(mode = "complete", delay = 0, storeFactory: (root: string) => AgentRunStore = (root) => new AgentRunStore(root)) {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agent-run-manager-")));
+  const project = path.join(root, "project");
+  const records = path.join(root, "records");
+  const envOutput = path.join(root, "child-env.json");
+  await fs.mkdir(project);
+  const manager = new AgentRunManager({
+    store: storeFactory(records),
+    invocation: (args) => ({
+      command: process.execPath,
+      args: [FIXTURE, ...args, "--fake-mode", mode, "--fake-delay", String(delay), "--env-output", envOutput],
+    }),
+    environment: {
+      PATH: process.env.PATH,
+      LANG: "en_US.UTF-8",
+      HOME: "/parent/home",
+      NODE_OPTIONS: "--require=/tmp/evil.js",
+      GITHUB_TOKEN: "secret",
+      NPM_TOKEN: "secret",
+      AWS_SECRET_ACCESS_KEY: "secret",
+      CMUX_SURFACE_ID: "surface:secret",
+      PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
+    },
+    terminationGraceMs: 30,
+    killGraceMs: 60,
+  });
+  return { root, project: await fs.realpath(project), manager, envOutput };
+}
+
+async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for condition.");
+}
+
+describe("AgentRunManager", () => {
+  test("awaits the correlated final-text response and persists a session checkpoint", async () => {
+    const item = await setup("complete", 75);
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Plan safely.",
+        task: "Return a result.",
+        runId: "run-complete",
+      });
+      const result = await handle.completion;
+      expect(result).toMatchObject({ exitCode: 0, output: "verified fake output" });
+      const [status] = await item.manager.status(item.project, handle.runId);
+      expect(status).toMatchObject({ status: "completed", sessionPresent: true, exitCode: 0 });
+      const record = await item.manager.store.load(item.project, handle.runId);
+      expect(record?.sessionFile).toStartWith(record!.sessionDir);
+      expect((await fs.lstat(record!.sessionFile!)).mode & 0o077).toBe(0);
+      expect(record).toMatchObject({ runtimePath: FIXTURE });
+      expect(record?.runtimeDigest).toMatch(/^[0-9a-f]{64}$/);
+      expect(record?.outputDigest).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("constructs a minimal child environment", async () => {
+    const item = await setup();
+    try {
+      const memoryProjectRoot = path.join(item.root, "authoritative-main");
+      await fs.mkdir(memoryProjectRoot);
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Plan safely.",
+        task: "Inspect environment.",
+        runId: "run-environment",
+        runContext: { memoryProjectRoot },
+      });
+      await handle.completion;
+      const environment = JSON.parse(await fs.readFile(item.envOutput, "utf8"));
+      expect(environment.PI_OFFLINE).toBe("1");
+      expect(environment.PI_WORKBENCH_RUN_ID).toStartWith("run-environment-");
+      expect(environment.PI_WORKBENCH_PROJECT_ROOT).toBe(item.project);
+      expect(environment.PI_WORKBENCH_MEMORY_PROJECT_ROOT).toBe(memoryProjectRoot);
+      expect(environment.HOME).not.toBe("/parent/home");
+      for (const forbidden of ["NODE_OPTIONS", "GITHUB_TOKEN", "NPM_TOKEN", "AWS_SECRET_ACCESS_KEY", "CMUX_SURFACE_ID"]) {
+        expect(environment[forbidden]).toBeUndefined();
+      }
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("enters waiting_for_parent and accepts one matching answer", async () => {
+    const item = await setup("question");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Ask when blocked.",
+        task: "ASK",
+        runId: "run-question",
+        runContext: { allowParentQuestions: true },
+      });
+      await waitFor(async () => (await item.manager.status(item.project, handle.runId))[0]?.status === "waiting_for_parent");
+      const [waiting] = await item.manager.status(item.project, handle.runId);
+      expect(waiting.question?.question).toBe("Which path?");
+      await expect(item.manager.answer(handle.runId, "wrong-question", "src")).rejects.toThrow("does not match");
+      const delivery = item.manager.answer(handle.runId, waiting.question!.id, "src");
+      await expect(item.manager.answer(handle.runId, waiting.question!.id, "duplicate")).rejects.toThrow("already being delivered");
+      await delivery;
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 0, output: "verified fake output" });
+      await expect(item.manager.answer(handle.runId, waiting.question!.id, "again")).rejects.toThrow("not active");
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("permits only one parent question for the full run", async () => {
+    const item = await setup("double-question");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Ask once when blocked.",
+        task: "ASK TWICE",
+        runId: "run-double-question",
+        runContext: { allowParentQuestions: true },
+      });
+      await waitFor(async () => (await item.manager.status(item.project, handle.runId))[0]?.status === "waiting_for_parent");
+      const [waiting] = await item.manager.status(item.project, handle.runId);
+      await item.manager.answer(handle.runId, waiting.question!.id, "src");
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 1, error: "Agent requested more than one parent answer for this run." });
+      expect((await item.manager.status(item.project, handle.runId))[0]).toMatchObject({ status: "failed", errorCode: "multiple_questions" });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("atomically rejects concurrent parent-question admission", async () => {
+    const item = await setup("concurrent-question");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Ask once when blocked.",
+        task: "ASK CONCURRENTLY",
+        runId: "run-concurrent-question",
+        runContext: { allowParentQuestions: true },
+      });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 1, error: "Agent requested more than one parent answer for this run." });
+      expect((await item.manager.status(item.project, handle.runId))[0]).toMatchObject({ status: "failed", errorCode: "multiple_questions" });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects oversized parent-question request identities at the RPC boundary", async () => {
+    const item = await setup("long-question-id");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Ask when blocked.",
+        task: "ASK",
+        runId: "run-long-question",
+        runContext: { allowParentQuestions: true },
+      });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 1 });
+      expect((await item.manager.status(item.project, handle.runId))[0]).toMatchObject({ status: "failed", errorCode: "invalid_ui_request" });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails closed on malformed child protocol", async () => {
+    const item = await setup("malformed");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Plan safely.",
+        task: "Break protocol.",
+        runId: "run-malformed",
+      });
+      const result = await handle.completion;
+      expect(result.exitCode).not.toBe(0);
+      expect(result.error).toContain("Malformed Agent RPC JSON");
+      const [status] = await item.manager.status(item.project, handle.runId);
+      expect(status).toMatchObject({ status: "failed", errorCode: "malformed_json" });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("requires exact final text and a non-symlinked private session checkpoint", async () => {
+    for (const [mode, errorCode] of [["blank-final", "invalid_final_text"], ["session-symlink", "final_handshake_failed"]] as const) {
+      const item = await setup(mode);
+      try {
+        const handle = await item.manager.start({
+          projectRoot: item.project,
+          agent: AGENT,
+          systemPrompt: "Finish safely.",
+          task: "Return a result.",
+          runId: `run-${mode}`,
+        });
+        await expect(handle.completion).resolves.toMatchObject({ exitCode: 1 });
+        expect((await item.manager.status(item.project, handle.runId))[0]).toMatchObject({ status: "failed", errorCode });
+      } finally {
+        await item.manager.shutdown();
+        await fs.rm(item.root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("keeps correlated final text immutable when a late message event arrives", async () => {
+    const item = await setup("late-message");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Finish safely.",
+        task: "Return an exact result.",
+        runId: "run-late-message",
+      });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 0, output: "verified fake output" });
+      const record = await item.manager.store.load(item.project, handle.runId);
+      expect(record?.outputDigest).toBe(digestAgentRunText("verified fake output"));
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails before prompting when the child loadout does not match", async () => {
+    const item = await setup("loadout-mismatch");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Plan safely.",
+        task: "Must not run.",
+        runId: "run-loadout-mismatch",
+      });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 1 });
+      expect((await item.manager.status(item.project, handle.runId))[0]).toMatchObject({ status: "failed", errorCode: "loadout_mismatch" });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("keeps requested job IDs distinct in durable run storage", async () => {
+    const item = await setup();
+    try {
+      const first = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Plan.", task: "One.", runId: "reused-job" });
+      await first.completion;
+      const second = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Plan.", task: "Two.", runId: "reused-job" });
+      await second.completion;
+      expect(first.runId).not.toBe(second.runId);
+      expect((await item.manager.store.list(item.project)).filter((record) => record.runId.startsWith("reused-job-"))).toHaveLength(2);
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not overwrite an early terminal close with a starting record", async () => {
+    const item = await setup("early-close");
+    try {
+      const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Plan.", task: "Exit.", runId: "early-close" });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 1 });
+      expect((await item.manager.status(item.project, handle.runId))[0]?.status).toBe("failed");
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("persists cancellation only after the process exits", async () => {
+    const item = await setup("hang");
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: AGENT,
+        systemPrompt: "Wait.",
+        task: "Hang.",
+        runId: "run-cancel",
+      });
+      await item.manager.cancel(handle.runId);
+      const during = (await item.manager.status(item.project, handle.runId))[0];
+      expect(["cancelling", "terminating", "cancelled"]).toContain(during.status);
+      const result = await handle.completion;
+      expect(result).toMatchObject({ cancelled: true });
+      expect((await item.manager.status(item.project, handle.runId))[0]?.status).toBe("cancelled");
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("still escalates cancellation when the cancelling record write fails", async () => {
+    class FailingCancellationStore extends AgentRunStore {
+      private failed = false;
+      override async save(paths: Parameters<AgentRunStore["save"]>[0], record: Parameters<AgentRunStore["save"]>[1]) {
+        if (!this.failed && record.status === "cancelling") {
+          this.failed = true;
+          throw new Error("injected cancellation persistence failure");
+        }
+        return super.save(paths, record);
+      }
+    }
+    const item = await setup("hang", 0, (root) => new FailingCancellationStore(root));
+    try {
+      const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Wait.", task: "Hang.", runId: "cancel-write-failure" });
+      await expect(item.manager.cancel(handle.runId)).rejects.toThrow("injected cancellation persistence failure");
+      await expect(handle.completion).resolves.toMatchObject({ cancelled: true });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("marks an unowned nonterminal record interrupted during recovery", async () => {
+    const item = await setup();
+    try {
+      const paths = await item.manager.store.prepare(item.project, "run-recovery");
+      const now = "2026-08-28T00:00:00.000Z";
+      await item.manager.store.save(paths, {
+        version: 1,
+        runId: "run-recovery",
+        agentId: "planner",
+        title: "Planner",
+        projectRoot: item.project,
+        cwd: item.project,
+        groupId: "group-one",
+        status: "running",
+        createdAt: now,
+        updatedAt: now,
+        sequence: 4,
+        taskDigest: "a".repeat(64),
+        systemPromptDigest: "b".repeat(64),
+        trustedCodeDigest: "c".repeat(64),
+        tools: ["read"],
+        readOnly: true,
+        allowBash: false,
+        sessionDir: paths.sessions,
+        pid: 999_999,
+        processStartIdentity: "missing process",
+      });
+      const recovered = await item.manager.recover(item.project);
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]).toMatchObject({ status: "interrupted", sequence: 5, errorCode: "parent-restarted" });
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildAgentChildEnvironment", () => {
+  test("omits parent credentials and loader hooks", () => {
+    const environment = buildAgentChildEnvironment(
+      { PATH: "/usr/bin", NODE_OPTIONS: "evil", OPENAI_API_KEY: "secret", PI_CODING_AGENT_DIR: "/safe/agent" },
+      { root: "/run", record: "/run/record", systemPrompt: "/run/prompt", sessions: "/run/sessions", temporaryHome: "/run/home", temporaryDirectory: "/run/tmp" },
+      { runId: "run", agentId: "agent", projectRoot: "/worktree", memoryProjectRoot: "/project", allowParentQuestions: false },
+    );
+    expect(environment).toMatchObject({
+      PATH: "/usr/bin", HOME: "/run/home", TMPDIR: "/run/tmp", PI_OFFLINE: "1",
+      PI_WORKBENCH_PROJECT_ROOT: "/worktree", PI_WORKBENCH_MEMORY_PROJECT_ROOT: "/project",
+    });
+    expect(environment.NODE_OPTIONS).toBeUndefined();
+    expect(environment.OPENAI_API_KEY).toBeUndefined();
+  });
+});

@@ -33,7 +33,12 @@ import { AgentDetailOverlay } from "../agent-overlay.ts";
 import { canDelegateSpecialists, parseSupervisorDecision } from "../supervisor.ts";
 import { DEFAULT_CONFIG, normalizeConfig } from "../config.ts";
 import { SKILL_EVOLUTION_ENABLED_BY_DEFAULT } from "../skill-evolution.ts";
-import { CHILD_MEMORY_ACTIONS, createToolCallBudgetGuard } from "../child-tools.ts";
+import {
+  CHILD_MEMORY_ACTIONS,
+  bashTouchesProtectedAgentStorage,
+  createToolCallBudgetGuard,
+  projectPathBlocked,
+} from "../child-tools.ts";
 import { createResearchTracks, detectResearchMode, parseResearchAgentOutput } from "../research-prompts.ts";
 import {
   auditResearchEvidence,
@@ -203,6 +208,32 @@ describe("Pi workflow routing", () => {
     expect(consume()).toBe(false);
     expect(consume()).toBe(false);
     expect(createToolCallBudgetGuard("")()).toBe(true);
+  });
+
+  test("confines child file tools to the delegated project and protects Pi storage from Bash", async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "child-project-scope-")));
+    const project = path.join(root, "project");
+    const outside = path.join(root, "outside");
+    const agentDir = path.join(root, ".pi", "agent");
+    await fs.mkdir(project);
+    await fs.mkdir(outside);
+    await fs.mkdir(agentDir, { recursive: true });
+    await fs.symlink(outside, path.join(project, "escape"));
+    const previous = process.env.PI_WORKBENCH_PROJECT_ROOT;
+    process.env.PI_WORKBENCH_PROJECT_ROOT = project;
+    try {
+      expect(projectPathBlocked(project, "inside.ts", false)).toBe(false);
+      expect(projectPathBlocked(project, outside, false)).toBe(true);
+      expect(projectPathBlocked(project, "escape/secret", false)).toBe(true);
+      expect(projectPathBlocked(project, undefined, true)).toBe(false);
+      expect(bashTouchesProtectedAgentStorage(`cat ${path.join(agentDir, "auth.json")}`, agentDir)).toBe(true);
+      expect(bashTouchesProtectedAgentStorage("cat $PI_CODING_AGENT_DIR/auth.json", agentDir)).toBe(true);
+      expect(bashTouchesProtectedAgentStorage("git diff -- src/index.ts", agentDir)).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_WORKBENCH_PROJECT_ROOT;
+      else process.env.PI_WORKBENCH_PROJECT_ROOT = previous;
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 
   test("routes workflow agents from task effort rather than fixed role assignments", () => {
