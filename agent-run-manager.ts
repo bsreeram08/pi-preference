@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AgentRpcConnection, AgentRpcProtocolError, MAX_AGENT_RPC_STDERR_BYTES, type AgentRpcEvent, type RpcResponse } from "./agent-rpc.ts";
 import { AgentRunStore, digestAgentRunText, type AgentRunPaths, type AgentRunQuestion, type AgentRunRecord, type AgentRunStatus } from "./agent-run-store.ts";
+import type { AgentRunViewer } from "./agent-cmux-viewer.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { inspectProcessStart } from "./exclusive-lease.ts";
 import type { AgentResult, AgentSpec } from "./types.ts";
@@ -65,6 +66,7 @@ export interface AgentRunStatusView {
 export interface AgentRunManagerOptions {
   readonly dashboard?: WorkbenchDashboardController;
   readonly store?: AgentRunStore;
+  readonly viewer?: AgentRunViewer;
   readonly spawnProcess?: typeof spawn;
   readonly now?: () => Date;
   readonly uuid?: () => string;
@@ -319,6 +321,7 @@ export class AgentRunManager {
   readonly store: AgentRunStore;
   private readonly active = new Map<string, ActiveRun>();
   private readonly recent = new Map<string, AgentRunRecord>();
+  private readonly viewer?: AgentRunViewer;
   private readonly spawnProcess: typeof spawn;
   private readonly now: () => Date;
   private readonly uuid: () => string;
@@ -331,6 +334,7 @@ export class AgentRunManager {
   constructor(options: AgentRunManagerOptions = {}) {
     this.dashboard = options.dashboard;
     this.store = options.store ?? new AgentRunStore();
+    this.viewer = options.viewer;
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.now = options.now ?? (() => new Date());
     this.uuid = options.uuid ?? randomUUID;
@@ -445,6 +449,16 @@ export class AgentRunManager {
       answer: (questionId, value) => { void this.answer(runId, questionId, value); },
     });
     request.progress?.(`${request.agent.title} started`);
+    try {
+      this.viewer?.start({
+        runId,
+        agentId: request.agent.id,
+        viewerFile: path.join(paths.root, "agent-view.html"),
+        projectName: path.basename(memoryProjectRoot),
+        status: active.record.status,
+        ...(active.record.model ? { model: active.record.model } : {}),
+      });
+    } catch { /* Optional cmux viewing must never affect execution. */ }
     attached = true;
     for (const event of earlyEvents) this.onEvent(runId, event);
     if (earlyProtocolFailure) this.onProtocolFailure(runId, earlyProtocolFailure);
@@ -517,6 +531,7 @@ export class AgentRunManager {
       await this.persist(active, { question: { ...question, answeredAt: this.now().toISOString() } });
       active.rpc.notify({ type: "extension_ui_response", id: question.rpcRequestId, value: value.trim() });
       await this.persist(active, { question: undefined });
+      this.projectViewer(active);
       const dashboard = active.request.runContext?.dashboard ?? this.dashboard;
       dashboard?.updateJob(runId, { status: "running", latestActivity: "Parent answer delivered", question: undefined });
     } catch (error) {
@@ -570,6 +585,7 @@ export class AgentRunManager {
     const dashboard = active?.request.runContext?.dashboard ?? this.dashboard;
     dashboard?.state.selectJob(runId);
     dashboard?.focusCards();
+    try { this.viewer?.focus(runId); } catch { /* Optional viewer failure is non-authoritative. */ }
   }
 
   async status(projectRoot: string, runId?: string): Promise<AgentRunStatusView[]> {
@@ -631,6 +647,21 @@ export class AgentRunManager {
 
   private async transition(active: ActiveRun, status: AgentRunStatus, patch: Partial<Omit<AgentRunRecord, "checksum" | "version" | "runId">> = {}): Promise<void> {
     await this.persist(active, { ...patch, status });
+    this.projectViewer(active);
+  }
+
+  private projectViewer(active: ActiveRun): void {
+    try {
+      this.viewer?.update({
+        runId: active.record.runId,
+        status: active.record.status,
+        output: truncate(active.validatedFinalText || active.latestAssistant || active.currentAssistant),
+        question: active.record.question?.question ?? "",
+        turns: active.assistantTurns,
+        tools: active.toolCalls,
+        errorCode: active.record.errorCode ?? "",
+      });
+    } catch { /* Optional viewer failure is non-authoritative. */ }
   }
 
   private async persist(active: ActiveRun, patch: Partial<Omit<AgentRunRecord, "checksum" | "version" | "runId">>): Promise<void> {
@@ -671,6 +702,7 @@ export class AgentRunManager {
       const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
       if (delta?.type === "text_delta" && typeof delta.delta === "string") active.currentAssistant += delta.delta;
       dashboard?.updateJob(runId, { status: "running", output: truncate(active.currentAssistant), latestActivity: "Generating response" });
+      this.projectViewer(active);
       return;
     }
     if (event.type === "message_end" && event.message) {
@@ -687,6 +719,7 @@ export class AgentRunManager {
         if (typeof message.stopReason === "string") active.lastStopReason = message.stopReason;
         this.enforceBudget(active);
       }
+      this.projectViewer(active);
       return;
     }
     if (event.type === "tool_execution_start") {
@@ -709,6 +742,7 @@ export class AgentRunManager {
         tests: [...new Set([...(job?.tests ?? []), ...discovered.tests])],
       });
       this.enforceBudget(active);
+      this.projectViewer(active);
       return;
     }
     if (event.type === "tool_execution_update") {
@@ -726,6 +760,7 @@ export class AgentRunManager {
           void this.transition(active, "running", { question: undefined }).catch((error) => this.onProtocolFailure(runId, new AgentRpcProtocolError("record_write_failed", error instanceof Error ? error.message : String(error))));
         }
       }
+      this.projectViewer(active);
       return;
     }
     if (event.type === "queue_update") {
@@ -851,6 +886,7 @@ export class AgentRunManager {
       active.validatedFinalText = text;
       active.latestAssistant = text;
       await this.persist(active, { sessionFile, sessionId });
+      this.projectViewer(active);
       active.finalHandshakeDone = true;
       active.rpc.closeInput();
     } catch (error) {

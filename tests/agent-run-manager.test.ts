@@ -16,7 +16,12 @@ const AGENT: AgentSpec = {
   readOnly: true,
 };
 
-async function setup(mode = "complete", delay = 0, storeFactory: (root: string) => AgentRunStore = (root) => new AgentRunStore(root)) {
+async function setup(
+  mode = "complete",
+  delay = 0,
+  storeFactory: (root: string) => AgentRunStore = (root) => new AgentRunStore(root),
+  viewer?: { start(input: unknown): void; update(input: unknown): void; focus(runId: string): void },
+) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agent-run-manager-")));
   const project = path.join(root, "project");
   const records = path.join(root, "records");
@@ -24,6 +29,7 @@ async function setup(mode = "complete", delay = 0, storeFactory: (root: string) 
   await fs.mkdir(project);
   const manager = new AgentRunManager({
     store: storeFactory(records),
+    viewer,
     invocation: (args) => ({
       command: process.execPath,
       args: [FIXTURE, ...args, "--fake-mode", mode, "--fake-delay", String(delay), "--env-output", envOutput],
@@ -75,6 +81,30 @@ describe("AgentRunManager", () => {
       expect(record).toMatchObject({ runtimePath: FIXTURE });
       expect(record?.runtimeDigest).toMatch(/^[0-9a-f]{64}$/);
       expect(record?.outputDigest).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("projects lifecycle and exact output to an optional non-authoritative viewer", async () => {
+    const starts: any[] = [];
+    const updates: any[] = [];
+    const focuses: string[] = [];
+    const viewer = {
+      start(input: unknown) { starts.push(input); },
+      update(input: unknown) { updates.push(input); },
+      focus(runId: string) { focuses.push(runId); },
+    };
+    const item = await setup("complete", 0, (root) => new AgentRunStore(root), viewer);
+    try {
+      const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Plan.", task: "Return.", runId: "viewed-run" });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 0, output: "verified fake output" });
+      expect(starts).toHaveLength(1);
+      expect(starts[0]).toMatchObject({ runId: handle.runId, agentId: "planner", status: "queued" });
+      expect(updates.some((update) => update.status === "completed" && update.output === "verified fake output")).toBe(true);
+      item.manager.focus(handle.runId);
+      expect(focuses).toEqual([handle.runId]);
     } finally {
       await item.manager.shutdown();
       await fs.rm(item.root, { recursive: true, force: true });

@@ -40,6 +40,7 @@ import {
   writeText,
 } from "./project.ts";
 import { runAgentsParallel, runSingleAgent } from "./subagents.ts";
+import { createCmuxAgentTabViewer } from "./agent-cmux-viewer.ts";
 import { AgentRunManager, setDefaultAgentRunManager } from "./agent-run-manager.ts";
 import { registerAgentRuntimeTools } from "./agent-runtime-tools.ts";
 import { assertMandatoryAgentBatch, assertMandatoryAgentResult } from "./agent-result-guard.ts";
@@ -239,7 +240,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
   registerCmuxWorkbench(pi);
   const exec: Exec = (command, args, options) => pi.exec(command, args, options);
   const dashboard = new WorkbenchDashboardController(pi);
-  const agentRunManager = new AgentRunManager({ dashboard });
+  const agentRunManager = new AgentRunManager({ dashboard, viewer: createCmuxAgentTabViewer() });
   setDefaultAgentRunManager(agentRunManager);
   const modelRouting = registerModelRouting(pi, (title, body) => report(pi, title, body));
   registerAgentRuntimeTools(pi, {
@@ -283,13 +284,9 @@ export default function piWorkbench(pi: ExtensionAPI) {
     dashboard.dispose();
   });
 
-  pi.registerShortcut("ctrl+alt+down", {
-    description: "Focus Sreeram's Pi Workbench agent cards",
-    handler: () => dashboard.focusCards(),
-  });
-  pi.registerShortcut("ctrl+alt+up", {
-    description: "Return focus to the Pi editor",
-    handler: () => dashboard.unfocusCards(),
+  pi.registerShortcut("ctrl+alt+a", {
+    description: "Toggle Sreeram's Pi Workbench agent dashboard",
+    handler: () => dashboard.toggleFocus(),
   });
 
   pi.registerCommand("council", {

@@ -25,6 +25,7 @@ describe("first-party agent runtime tool surface", () => {
     ]);
     expect(tools.some((tool) => tool.name === "subagent")).toBe(false);
     expect(tools.find((tool) => tool.name === "workbench_agent_start")?.description).toContain("persistent");
+    expect(tools.find((tool) => tool.name === "workbench_agent_focus")?.description).toContain("cmux tab");
   });
 
   test("rejects persistent Bash-capable profiles before project discovery", async () => {

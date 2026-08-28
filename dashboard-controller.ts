@@ -40,6 +40,10 @@ export class WorkbenchDashboardController {
     this.state.setFocused(false);
   }
 
+  toggleFocus(): void {
+    this.state.setFocused(!this.state.isFocused());
+  }
+
   endRun(): void {
     this.runController = undefined;
     this.state.endRun();
@@ -100,10 +104,6 @@ export class WorkbenchDashboardController {
   private handleInput(data: string): { consume?: boolean; data?: string } | undefined {
     if (this.overlayOpen) return undefined;
 
-    if (matchesKey(data, "ctrl+alt+down")) {
-      this.state.setFocused(true);
-      return { consume: true };
-    }
     if (!this.state.isFocused()) return undefined;
 
     if (matchesKey(data, Key.escape)) {

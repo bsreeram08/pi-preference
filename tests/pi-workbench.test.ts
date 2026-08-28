@@ -125,6 +125,25 @@ describe("agent dashboard state", () => {
     expect(dashboard.getGroups()).toHaveLength(0);
   });
 
+  test("uses Ctrl+Alt+A as a single dashboard focus toggle", () => {
+    const controller = new WorkbenchDashboardController({} as any);
+    let input: ((data: string) => any) | undefined;
+    controller.attach({
+      mode: "tui",
+      ui: {
+        onTerminalInput(handler: (data: string) => any) { input = handler; return () => undefined; },
+        setFooter() {},
+      },
+    } as any);
+    expect(controller.state.isFocused()).toBe(false);
+    controller.toggleFocus();
+    expect(controller.state.isFocused()).toBe(true);
+    controller.toggleFocus();
+    expect(controller.state.isFocused()).toBe(false);
+    expect(input?.("unbound")).toBeUndefined();
+    controller.dispose();
+  });
+
   test("keeps selected-child cancellation local and aborts the run before cancel-all children", () => {
     const controller = new WorkbenchDashboardController({} as any);
     let input: ((data: string) => unknown) | undefined;

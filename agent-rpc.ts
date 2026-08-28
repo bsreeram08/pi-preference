@@ -1,7 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 
-export const MAX_AGENT_RPC_FRAME_BYTES = 256 * 1024;
+export const MAX_AGENT_RPC_FRAME_BYTES = 4 * 1024 * 1024;
 export const MAX_AGENT_RPC_STDERR_BYTES = 64 * 1024;
 
 const EVENT_TYPES = new Set([
@@ -39,7 +39,6 @@ export class JsonlFrameDecoder {
 
   push(chunk: Buffer | string): string[] {
     this.buffer += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
-    this.assertBufferedSize();
     const lines: string[] = [];
     while (true) {
       const newline = this.buffer.indexOf("\n");
@@ -50,6 +49,7 @@ export class JsonlFrameDecoder {
       this.assertFrameSize(line);
       if (line.length > 0) lines.push(line);
     }
+    this.assertBufferedSize();
     return lines;
   }
 
@@ -63,13 +63,13 @@ export class JsonlFrameDecoder {
 
   private assertBufferedSize(): void {
     if (Buffer.byteLength(this.buffer, "utf8") > this.maxFrameBytes) {
-      throw new AgentRpcProtocolError("frame_too_large", "Agent RPC frame exceeded its byte limit before LF framing.");
+      throw new AgentRpcProtocolError("frame_too_large", `Agent RPC frame exceeded the ${this.maxFrameBytes}-byte limit before LF framing.`);
     }
   }
 
   private assertFrameSize(line: string): void {
     if (Buffer.byteLength(line, "utf8") > this.maxFrameBytes) {
-      throw new AgentRpcProtocolError("frame_too_large", "Agent RPC frame exceeded its byte limit.");
+      throw new AgentRpcProtocolError("frame_too_large", `Agent RPC frame exceeded the ${this.maxFrameBytes}-byte limit.`);
     }
   }
 }

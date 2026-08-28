@@ -12,6 +12,8 @@ import {
 
 export type CmuxTaskState = WorkflowLifecycleEvent["state"];
 export type CmuxCommandRunner = (args: readonly string[]) => Promise<boolean>;
+export interface CmuxCommandResult { readonly ok: boolean; readonly stdout: string; readonly stderr: string }
+export type CmuxOutputRunner = (args: readonly string[]) => Promise<CmuxCommandResult>;
 
 export interface CmuxEnvironment {
   readonly workspaceId?: string;
@@ -23,7 +25,7 @@ interface RegisterOptions {
   readonly runner?: CmuxCommandRunner;
 }
 
-interface CmuxRunnerOptions {
+export interface CmuxRunnerOptions {
   readonly timeoutMs?: number;
   readonly killGraceMs?: number;
 }
@@ -150,7 +152,7 @@ function cleanupCommands(environment: CmuxEnvironment): readonly (readonly strin
 function safeEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const allowed = [
     "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL",
-    "CMUX_SOCKET_PATH", "CMUX_SOCKET", "CMUX_SOCKET_PASSWORD",
+    "CMUX_SOCKET_PATH", "CMUX_SOCKET", "CMUX_SOCKET_PASSWORD", "CMUX_SOCKET_CAPABILITY",
     "CMUX_WORKSPACE_ID", "CMUX_SURFACE_ID", "CMUX_TAB_ID",
   ];
   return Object.fromEntries(allowed.flatMap((key) => environment[key] === undefined ? [] : [[key, environment[key]]]));
@@ -163,26 +165,29 @@ function cmuxExecutable(environment: NodeJS.ProcessEnv): string {
   return path.join(agentDir, "bin", "cmux");
 }
 
-export function createCmuxCommandRunner(
+export function createCmuxOutputRunner(
   environment: NodeJS.ProcessEnv = process.env,
   options: CmuxRunnerOptions = {},
-): CmuxCommandRunner {
+): CmuxOutputRunner {
   const executable = cmuxExecutable(environment);
   const childEnvironment = safeEnvironment(environment);
   const timeoutMs = Math.max(1, options.timeoutMs ?? 5_000);
   const killGraceMs = Math.max(1, options.killGraceMs ?? 500);
-  return (args) => new Promise<boolean>((resolve) => {
+  return (args) => new Promise<CmuxCommandResult>((resolve) => {
     let finished = false;
     let timedOut = false;
+    let stdout = "";
+    let stderr = "";
     let killTimer: NodeJS.Timeout | undefined;
-    const child = spawn(executable, [...args], { env: childEnvironment, stdio: "ignore" });
+    const child = spawn(executable, [...args], { env: childEnvironment, stdio: ["ignore", "pipe", "pipe"] });
     child.unref();
-    const finish = (success: boolean): void => {
+    const append = (current: string, chunk: Buffer): string => `${current}${chunk.toString()}`.slice(-64 * 1024);
+    const finish = (result: CmuxCommandResult): void => {
       if (finished) return;
       finished = true;
       clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
-      resolve(success);
+      resolve(result);
     };
     const timeoutTimer = setTimeout(() => {
       timedOut = true;
@@ -193,9 +198,19 @@ export function createCmuxCommandRunner(
       killTimer.unref?.();
     }, timeoutMs);
     timeoutTimer.unref?.();
-    child.once("error", () => finish(false));
-    child.once("close", (code) => finish(!timedOut && code === 0));
+    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    child.once("error", (error) => finish({ ok: false, stdout, stderr: `${stderr}${error.message}`.slice(-64 * 1024) }));
+    child.once("close", (code) => finish({ ok: !timedOut && code === 0, stdout, stderr }));
   });
+}
+
+export function createCmuxCommandRunner(
+  environment: NodeJS.ProcessEnv = process.env,
+  options: CmuxRunnerOptions = {},
+): CmuxCommandRunner {
+  const runner = createCmuxOutputRunner(environment, options);
+  return async (args) => (await runner(args)).ok;
 }
 
 export class CmuxTaskBridge {

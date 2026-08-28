@@ -193,7 +193,7 @@ function renderDashboardStatus(
 
   const leftParts = statuses.map((status) => theme.fg("muted", status));
   if (activeCount > 0 || finishedCount > 0) {
-    leftParts.push(theme.fg("dim", dashboard.isFocused() ? "Esc close agent dashboard" : "Ctrl+Alt+↓ agent dashboard"));
+    leftParts.push(theme.fg("dim", dashboard.isFocused() ? "Ctrl+Alt+A / Esc close agent dashboard" : "Ctrl+Alt+A agent dashboard"));
   }
 
   const rightParts: string[] = [];
