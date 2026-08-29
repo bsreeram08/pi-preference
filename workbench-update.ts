@@ -8,7 +8,7 @@ import { acquireUpdateExclusiveLease, type ExclusiveLease } from "./exclusive-le
 import type { Exec, ExecResult } from "./types.ts";
 
 const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-workbench.git";
-const TRUSTED_ORIGIN_PATTERN = /^https:\/\/github\.com\/bsreeram08\/pi-workbench(?:\.git)?\/?$/;
+const TRUSTED_ORIGIN_PATTERN = /^https:\/\/github\.com\/bsreeram08\/(?:pi-workbench|pi-preference)(?:\.git)?\/?$/;
 const RELEASES_URL = "https://api.github.com/repos/bsreeram08/pi-workbench/releases?per_page=100";
 const TRUSTED_REPROMPTER = "https://github.com/AytuncYildizli/reprompter.git";
 const PRIVATE_REF = "refs/pi-workbench-updater/candidate";
@@ -1646,6 +1646,10 @@ export class WorkbenchUpdater {
         await this.validateGitmodules();
         await this.git(["submodule", "sync", "--", "reprompter"]);
         await this.git(["submodule", "update", "--init", "--checkout", "--force", "--", "reprompter"]);
+        await this.git(["remote", "set-url", "origin", TRUSTED_REPOSITORY]);
+        const migratedOrigins = (await this.git(["config", "--get-all", "remote.origin.url"])).stdout
+          .replace(/\r/g, "").split("\n").filter(Boolean);
+        if (migratedOrigins.length !== 1 || migratedOrigins[0] !== TRUSTED_REPOSITORY) throw new UpdateFailure("UPDATE_FAILED");
         const updatedTree = await this.git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
         if (updatedTree.stdout !== "") throw new UpdateFailure("UPDATE_FAILED");
         await this.inspectSubmodules();
