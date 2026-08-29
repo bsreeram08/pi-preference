@@ -287,16 +287,16 @@ The installed cmux CLI supports the narrow required primitives:
 - `move-surface --surface ... --focus true`
 - `close-surface --surface ...`
 
-Workspace status, progress, logs, and notifications remain separate aggregate lifecycle surfaces.
+Workspace status, progress, logs, and notifications remain separate aggregate lifecycle surfaces. Lifecycle words such as `done`, `failed`, or `needs attention` belong there, while tab titles and workspace descriptions remain the stable project/task identity.
 
 The interactive launch path is deliberately narrow:
 
-1. A validated parent cmux session host prepares a private 0600 contract and categorical title.
+1. A validated parent cmux session host prepares a private 0600 contract plus a bounded local `<project> · <task>` identity; the categorical agent role is retained only in the description.
 2. AgentRunManager spawns a trusted Node bridge instead of `pi --mode rpc`; launch failure inside validated cmux fails closed without hidden fallback.
 3. The bridge resolves the exact caller workspace/pane with `cmux identify` and creates exactly one `new-surface --type terminal ... --focus false` there.
-4. It atomically writes a private 0700 launcher and sends only `bash <private-launcher-path>` to the recorded terminal. Prompt/task/output/model/error text is absent from cmux arguments and titles.
+4. It atomically writes a private 0700 launcher and sends only `bash <private-launcher-path>` to the recorded terminal. Raw prompt/output/model/error text is absent from cmux arguments; only the derived, control-free, secret-filtered project/task identity may enter title/description arguments.
 5. The launcher starts normal Pi TUI mode with the exact private session directory/ID, trusted child tools plus the trusted child bridge extension, exact tools/model/system prompt, disabled ambient resources/approval, minimal environment, exact cwd, and inherited PTY stdio.
-6. The child authenticates over a private local Unix socket, reports the exact existing loadout handshake, and only then receives the task over bounded frames. It forwards only the manager-required bounded events and accepts prompt/steer/follow-up/abort; direct user input remains native TUI behavior. A private 0600 sidecar carries only categorical `waiting`/`running` native-question state so the title can change without exposing question or answer text.
+6. The child authenticates over a private local Unix socket, reports the exact existing loadout handshake, and only then receives the task over bounded frames. It forwards only the manager-required bounded events and accepts prompt/steer/follow-up/abort; direct user input remains native TUI behavior. A private 0600 sidecar carries only categorical `waiting`/`running` native-question state; `waiting` emits a needs-attention notification without replacing the stable task title or exposing question/answer text.
 7. A normal queue-empty settlement commits exact final text and session state before `ctx.shutdown()`. Error/length fails closed. Direct-user abort reports no success and leaves the tab open; cancellation requests abort/shutdown first.
 8. The bridge closes only its recorded surface after child shutdown and verifies exact pane-membership removal rather than relying on cmux's focused-surface fallback. Manual surface closure fails; bridge signal or parent disconnect cleans only that surface. No `read-screen`, screen scraping, browser, HTML, tmux, or built-in cmux agent-session is used.
 9. Outside cmux, the tested headless RPC executor remains available. If any cmux marker is present but caller identity is missing or malformed, extension startup fails clearly rather than silently launching a hidden RPC child.

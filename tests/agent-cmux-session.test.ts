@@ -31,14 +31,20 @@ describe("cmux interactive agent session host", () => {
         CMUX_SOCKET_PASSWORD: "socket-capability",
       }, runner);
       const prepared = await host.prepare({
-        runId: "run-one", agentId: "constructor", paths, projectRoot: root,
+        runId: "run-one", agentId: "constructor", paths, projectRoot: root, task: "Review constructor behavior",
         piInvocation: { command: "/usr/bin/pi", args: ["--session-dir", paths.sessions, "--extension", "/trusted/child.ts"] },
         childEnvironment: { PATH: "/usr/bin", HOME: paths.temporaryHome },
       });
       expect(prepared.invocation.args).toEqual([expect.stringContaining("agent-cmux-bridge.mjs"), path.join(paths.root, "cmux-bridge.json")]);
       expect(prepared.environment.CMUX_SOCKET_PASSWORD).toBe("socket-capability");
       const contract = JSON.parse(await fs.readFile(path.join(paths.root, "cmux-bridge.json"), "utf8"));
-      expect(contract).toMatchObject({ version: 1, runId: "run-one", title: "Specialist", projectRoot: root });
+      expect(contract).toMatchObject({
+        version: 1,
+        runId: "run-one",
+        title: expect.stringContaining("· Review constructor behavior"),
+        description: "Specialist: Review constructor behavior",
+        projectRoot: root,
+      });
       expect(contract.authToken).toMatch(/^[0-9a-f]{64}$/);
       expect(contract.socketPath.length).toBeLessThan(100);
       expect(path.dirname(contract.socketPath)).toBe(os.tmpdir());
