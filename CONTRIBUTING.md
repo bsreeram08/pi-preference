@@ -23,7 +23,7 @@ Requirements:
 Clone recursively and install the pinned development dependencies:
 
 ```bash
-git clone --recurse-submodules https://github.com/bsreeram08/pi-preference.git
+git clone --recurse-submodules https://github.com/bsreeram08/pi-workbench.git
 cd pi-workbench
 bun install --frozen-lockfile
 ```

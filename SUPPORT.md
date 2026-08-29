@@ -2,7 +2,7 @@
 
 ## Questions and bugs
 
-Search existing [GitHub Issues](https://github.com/bsreeram08/pi-preference/issues) before opening a new one. Use the provided issue forms and include:
+Search existing [GitHub Issues](https://github.com/bsreeram08/pi-workbench/issues) before opening a new one. Use the provided issue forms and include:
 
 - Workbench and Pi versions
 - operating system and installation mode

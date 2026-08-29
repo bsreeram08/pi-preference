@@ -7,9 +7,9 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import { acquireUpdateExclusiveLease, type ExclusiveLease } from "./exclusive-lease.ts";
 import type { Exec, ExecResult } from "./types.ts";
 
-const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-preference.git";
-const TRUSTED_ORIGIN_PATTERN = /^https:\/\/github\.com\/bsreeram08\/pi-preference(?:\.git)?\/?$/;
-const RELEASES_URL = "https://api.github.com/repos/bsreeram08/pi-preference/releases?per_page=100";
+const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-workbench.git";
+const TRUSTED_ORIGIN_PATTERN = /^https:\/\/github\.com\/bsreeram08\/pi-workbench(?:\.git)?\/?$/;
+const RELEASES_URL = "https://api.github.com/repos/bsreeram08/pi-workbench/releases?per_page=100";
 const TRUSTED_REPROMPTER = "https://github.com/AytuncYildizli/reprompter.git";
 const PRIVATE_REF = "refs/pi-workbench-updater/candidate";
 const MAIN_REF = "refs/heads/main";
