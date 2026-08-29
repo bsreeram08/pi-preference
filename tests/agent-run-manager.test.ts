@@ -26,12 +26,16 @@ async function setup(
   const records = path.join(root, "records");
   const envOutput = path.join(root, "child-env.json");
   await fs.mkdir(project);
+  let launchArgs: string[] = [];
   const manager = new AgentRunManager({
     store: storeFactory(records),
-    invocation: (args) => ({
-      command: process.execPath,
-      args: [FIXTURE, ...args, "--fake-mode", mode, "--fake-delay", String(delay), "--env-output", envOutput],
-    }),
+    invocation: (args) => {
+      launchArgs = [...args];
+      return {
+        command: process.execPath,
+        args: [FIXTURE, ...args, "--fake-mode", mode, "--fake-delay", String(delay), "--env-output", envOutput],
+      };
+    },
     environment: {
       PATH: process.env.PATH,
       LANG: "en_US.UTF-8",
@@ -46,7 +50,7 @@ async function setup(
     terminationGraceMs: 30,
     killGraceMs: 60,
   });
-  return { root, project: await fs.realpath(project), manager, envOutput };
+  return { root, project: await fs.realpath(project), manager, envOutput, launchArgs: () => launchArgs };
 }
 
 async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
@@ -63,6 +67,66 @@ describe("AgentRunManager", () => {
     expect(defaultAgentInvocation(["--mode", "rpc"], "/usr/bin/node")).toEqual({ command: "pi", args: ["--mode", "rpc"] });
     expect(defaultAgentInvocation(["--mode", "rpc"], "/opt/homebrew/bin/bun")).toEqual({ command: "pi", args: ["--mode", "rpc"] });
     expect(defaultAgentInvocation(["--mode", "rpc"], "/Applications/Pi.app/pi")).toEqual({ command: "/Applications/Pi.app/pi", args: ["--mode", "rpc"] });
+  });
+
+  test("loads fast mode for supported Sol and Luna routes after stripping thinking suffixes", async () => {
+    for (const route of ["openai-codex/gpt-5.6-sol:high", "openai-codex/gpt-5.6-luna:max"]) {
+      const item = await setup();
+      try {
+        const handle = await item.manager.start({
+          projectRoot: item.project,
+          agent: { ...AGENT, model: route },
+          systemPrompt: "Plan safely.",
+          task: "Return a result.",
+          runId: "fast-supported",
+        });
+        await expect(handle.completion).resolves.toMatchObject({ exitCode: 0 });
+        expect(item.launchArgs().some((value) => value.endsWith("child-fast-mode.ts"))).toBe(true);
+        expect(item.launchArgs().filter((value) => value === "--extension")).toHaveLength(2);
+        expect(item.launchArgs().filter((value) => value === "--no-extensions")).toHaveLength(1);
+      } finally {
+        await item.manager.shutdown();
+        await fs.rm(item.root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("inherits fast mode for a supported manager default model", async () => {
+    const item = await setup();
+    try {
+      item.manager.setDefaultModel("openai-codex/gpt-5.6-luna:low");
+      const handle = await item.manager.start({
+        projectRoot: item.project, agent: AGENT, systemPrompt: "Plan safely.", task: "Return a result.", runId: "fast-default",
+      });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 0 });
+      expect(item.launchArgs().some((value) => value.endsWith("child-fast-mode.ts"))).toBe(true);
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
+  test("omits fast mode for Terra, non-GPT providers, and explicit per-agent disablement", async () => {
+    const cases: AgentSpec[] = [
+      { ...AGENT, model: "openai-codex/gpt-5.6-terra:high" },
+      { ...AGENT, model: "anthropic/claude-opus-4-1:high" },
+      { ...AGENT, model: "openai-codex/gpt-5.6-sol:high", fastMode: false },
+    ];
+    for (const agent of cases) {
+      const item = await setup();
+      try {
+        const handle = await item.manager.start({
+          projectRoot: item.project, agent, systemPrompt: "Plan safely.", task: "Return a result.", runId: "fast-unsupported",
+        });
+        await expect(handle.completion).resolves.toMatchObject({ exitCode: 0 });
+        expect(item.launchArgs().some((value) => value.endsWith("child-fast-mode.ts"))).toBe(false);
+        expect(item.launchArgs().filter((value) => value === "--extension")).toHaveLength(1);
+        expect(item.launchArgs().filter((value) => value === "--no-extensions")).toHaveLength(1);
+      } finally {
+        await item.manager.shutdown();
+        await fs.rm(item.root, { recursive: true, force: true });
+      }
+    }
   });
 
   test("awaits the correlated final-text response and persists a session checkpoint", async () => {

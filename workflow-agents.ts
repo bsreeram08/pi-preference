@@ -148,7 +148,7 @@ export function resolveWorkflowAgent(
   const profile = getWorkflowAgentProfile(id);
   if (!profile) return undefined;
   const route = routeTask({ task, role: profile.id, effort, policy: routingState, readOnly: profile.readOnly });
-  return { ...profile, model: route.model };
+  return { ...profile, model: route.model, fastMode: config.fastMode };
 }
 
 export function selectPlanningDiscoveryAgentIds(task: string): WorkflowAgentId[] {

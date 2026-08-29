@@ -104,6 +104,27 @@ describe("AgentRunManager interactive cmux runtime", () => {
     } finally { await item.manager.shutdown(); await fs.rm(item.root, { recursive: true, force: true }); }
   });
 
+  test("prepares the same fast-mode extension in the interactive cmux Pi invocation", async () => {
+    const item = await harness();
+    try {
+      const handle = await item.manager.start({
+        projectRoot: item.project,
+        agent: { ...AGENT, model: "openai-codex/gpt-5.6-sol:xhigh" },
+        systemPrompt: "Prompt",
+        task: "complete",
+        runId: "interactive-fast-mode",
+      });
+      await expect(handle.completion).resolves.toMatchObject({ exitCode: 0 });
+      const record = await item.manager.store.load(item.project, handle.runId);
+      const piArgs = JSON.parse(await fs.readFile(path.join(path.dirname(record!.sessionDir), "pi-args.json"), "utf8"));
+      expect(piArgs.filter((value: string) => value === "--extension")).toHaveLength(3);
+      expect(piArgs.some((value: string) => value.endsWith("child-fast-mode.ts"))).toBe(true);
+    } finally {
+      await item.manager.shutdown();
+      await fs.rm(item.root, { recursive: true, force: true });
+    }
+  });
+
   test("an aborted interactive turn leaves the tab open and accepts a later steer", async () => {
     const item = await harness();
     try {
