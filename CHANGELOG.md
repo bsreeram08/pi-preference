@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added session-only `/automode on|off|status`, which directs the main Coordinator to keep building with conservative, reversible defaults instead of asking routine questions while preserving credential, destructive/high-risk, unrecoverable-ambiguity, permission, and verification stops.
 - Renamed the canonical public repository from `bsreeram08/pi-preference` to `bsreeram08/pi-workbench` so the repository name matches the product and existing package/installation identifiers.
 - Added an optional fail-soft interactive startup update check that asks before applying a newer trusted `pi-workbench` commit, suppresses duplicate candidate prompts per runtime, and makes trusted `main` a repeatable fallback channel when no stable release exists.
 - Added the first-party interactive cmux session runtime: every managed child inside cmux is the actual normal Pi TUI in one unfocused terminal tab in the caller's exact workspace/pane, launched through a private 0700 launcher and controlled over an authenticated bounded Unix socket while AgentRunManager remains lifecycle/result authority. Normal settlement commits final text/session state and closes only the recorded tab; direct abort stays open, manual closure fails, and cancellation requests child shutdown before exact-surface cleanup. Outside cmux, the headless RPC executor remains for compatibility.
