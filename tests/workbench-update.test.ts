@@ -17,6 +17,7 @@ import {
 
 const PROJECT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-workbench.git";
+const LEGACY_TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-preference.git";
 const TRUSTED_REPROMPTER = "https://github.com/AytuncYildizli/reprompter.git";
 const roots: string[] = [];
 
@@ -168,7 +169,8 @@ async function createFixture(profile: UpdateProfile = "default"): Promise<Fixtur
       const gitIndex = args.indexOf("git");
       if (gitIndex >= 0) {
         args.splice(gitIndex + 1, 0, "-c", `url.${subRemote}.insteadOf=${TRUSTED_REPROMPTER}`);
-        args = args.map((value) => value === TRUSTED_REPOSITORY ? remote : value);
+        const changesOrigin = originalArgs.includes("remote") && originalArgs.includes("set-url");
+        args = args.map((value) => value === TRUSTED_REPOSITORY && !changesOrigin ? remote : value);
         gitArgs = args.slice(gitIndex + 1);
         const submoduleUpdate = gitArgs.includes("submodule") && gitArgs.includes("update");
         if (controls.candidateLsTreeOutput !== undefined && gitArgs.includes("ls-tree") && gitArgs.includes("reprompter")) {
@@ -753,6 +755,31 @@ describe("Pi Workbench updater apply transaction", () => {
       expect(git(fixture.root, "rev-parse", "HEAD")).toBe(fixture.candidate);
     }
   }, 15_000);
+
+  test("accepts the legacy repository origin and migrates it only after a confirmed update", async () => {
+    const successful = await createFixture();
+    git(successful.root, "remote", "set-url", "origin", LEGACY_TRUSTED_REPOSITORY);
+    expect(await successful.updater(fakeReleases([release("v1.1.0")])).status()).toMatchObject({
+      category: "update-available",
+      code: "READY",
+    });
+    expect(await apply(successful.updater(fakeReleases([release("v1.1.0")])))).toMatchObject({
+      category: "updated",
+      code: "UPDATED",
+      reload: true,
+    });
+    expect(git(successful.root, "remote", "get-url", "origin")).toBe(TRUSTED_REPOSITORY);
+
+    const failed = await createFixture();
+    git(failed.root, "remote", "set-url", "origin", LEGACY_TRUSTED_REPOSITORY);
+    failed.controls.installerExit = 1;
+    expect(await apply(failed.updater(fakeReleases([release("v1.1.0")])))).toMatchObject({
+      category: "blocked",
+      code: "ROLLED_BACK",
+      reload: false,
+    });
+    expect(git(failed.root, "remote", "get-url", "origin")).toBe(LEGACY_TRUSTED_REPOSITORY);
+  }, 20_000);
 
   test("preserves contained legacy submodule metadata through success and rollback", async () => {
     for (const failure of [false, true]) {

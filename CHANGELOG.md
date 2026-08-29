@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Renamed the canonical public repository from `bsreeram08/pi-preference` to `bsreeram08/pi-workbench` so the repository name matches the product and existing package/installation identifiers.
+- Renamed the canonical public repository from `bsreeram08/pi-preference` to `bsreeram08/pi-workbench` so the repository name matches the product and existing package/installation identifiers; updater preflight temporarily accepts the exact legacy HTTPS origin and a confirmed successful update migrates it to the canonical URL, while rollback restores the legacy origin.
 - Changed cmux naming to stable, bounded `<project> · <task>` titles with task-focused workspace descriptions for Main Pi and interactive Workbench agents. Lifecycle completion/failure/needs-attention now stays in notifications, status, and progress instead of replacing work identity with generic labels such as `Pi session · done`; secret-like task text fails closed to the project name.
 - Hardened cmux work identities to reject unsafe project basenames, common bare credential formats, control text, and high-entropy token-like values, and to truncate every title and description by UTF-8 bytes within the bridge contract without splitting code points.
 - Fixed an Ubuntu/Bun 1.3 startup-test failure by immediately observing a child loadout rejection that can arrive before startup persistence reaches the authoritative loadout wait; the later wait still receives and handles the same protocol failure.
