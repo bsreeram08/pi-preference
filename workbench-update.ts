@@ -8,7 +8,7 @@ import { acquireUpdateExclusiveLease, type ExclusiveLease } from "./exclusive-le
 import type { Exec, ExecResult } from "./types.ts";
 
 const TRUSTED_REPOSITORY = "https://github.com/bsreeram08/pi-workbench.git";
-const TRUSTED_ORIGIN_PATTERN = /^https:\/\/github\.com\/bsreeram08\/pi-workbench(?:\.git)?\/?$/;
+const TRUSTED_ORIGIN_PATTERN = /^https:\/\/github\.com\/bsreeram08\/(?:pi-workbench|pi-preference)(?:\.git)?\/?$/;
 const RELEASES_URL = "https://api.github.com/repos/bsreeram08/pi-workbench/releases?per_page=100";
 const TRUSTED_REPROMPTER = "https://github.com/AytuncYildizli/reprompter.git";
 const PRIVATE_REF = "refs/pi-workbench-updater/candidate";
@@ -165,11 +165,13 @@ interface Preflight {
   readonly currentVersion: string;
   readonly profile: UpdateProfile;
   readonly submodules: string;
+  readonly origin: string;
 }
 
 interface StatusInternal extends WorkbenchUpdateStatus {
   readonly sourceRef?: string;
   readonly submodules?: string;
+  readonly origin?: string;
 }
 
 export type RollbackCheckoutOperation = "preserve-failed-checkout" | "restore-checkout-snapshot";
@@ -224,6 +226,10 @@ function trimOneLine(value: string): string | undefined {
   return lines.length === 1 ? lines[0] : undefined;
 }
 
+function literalRegex(value: string): string {
+  return `^${value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`;
+}
+
 function hash(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -232,12 +238,12 @@ function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException)?.code === "ENOENT";
 }
 
-function blocked(code: UpdateCode, partial: Partial<WorkbenchUpdateStatus> = {}): StatusInternal {
+function blocked(code: UpdateCode, partial: Partial<StatusInternal> = {}): StatusInternal {
   return { category: "blocked", code, ...partial };
 }
 
 function publicStatus(status: StatusInternal): WorkbenchUpdateStatus {
-  const { sourceRef: _sourceRef, submodules: _submodules, ...visible } = status;
+  const { sourceRef: _sourceRef, submodules: _submodules, origin: _origin, ...visible } = status;
   return visible;
 }
 
@@ -949,7 +955,7 @@ export class WorkbenchUpdater {
     }
     const profile = await this.readProfile();
     await this.assertExpectedLinks(profile);
-    return { currentCommit, currentVersion, profile, submodules };
+    return { currentCommit, currentVersion, profile, submodules, origin: configuredOrigins[0]! };
   }
 
   private async validateMainAuditState(): Promise<void> {
@@ -1047,6 +1053,7 @@ export class WorkbenchUpdater {
         currentVersion: local.currentVersion,
         profile: local.profile,
         submodules: local.submodules,
+        origin: local.origin,
       };
       const candidate = await this.releaseCandidate();
       partial = { ...partial, candidate: candidate.label, channel: candidate.channel, sourceRef: candidate.sourceRef };
@@ -1097,7 +1104,8 @@ export class WorkbenchUpdater {
       && first.channel === second.channel
       && first.profile === second.profile
       && first.sourceRef === second.sourceRef
-      && first.submodules === second.submodules;
+      && first.submodules === second.submodules
+      && first.origin === second.origin;
   }
 
   private async snapshotFileAt(base: string, relativePath: string, backupName: string): Promise<FileSnapshot> {
@@ -1343,6 +1351,20 @@ export class WorkbenchUpdater {
     }
   }
 
+  private async assertExpectedOrigin(expectedOrigin: string): Promise<void> {
+    const remotes = (await this.git(["remote"])).stdout.replace(/\r/g, "").split("\n").filter(Boolean);
+    const origins = (await this.git(["config", "--get-all", "remote.origin.url"])).stdout
+      .replace(/\r/g, "").split("\n").filter(Boolean);
+    const pushUrls = await this.git(["config", "--get-all", "remote.origin.pushurl"], [0, 1]);
+    if (remotes.length !== 1
+      || remotes[0] !== "origin"
+      || origins.length !== 1
+      || origins[0] !== expectedOrigin
+      || pushUrls.stdout !== "") {
+      throw new UpdateFailure("UPDATE_FAILED");
+    }
+  }
+
   private async postverify(candidateCommit: string, profile: UpdateProfile): Promise<void> {
     const head = trimOneLine((await this.git(["rev-parse", "HEAD"])).stdout);
     if (head !== candidateCommit) throw new UpdateFailure("UPDATE_FAILED");
@@ -1351,6 +1373,7 @@ export class WorkbenchUpdater {
     await this.inspectSubmodules();
     if (await this.readProfile() !== profile) throw new UpdateFailure("UPDATE_FAILED");
     await this.assertExpectedLinks(profile);
+    await this.assertExpectedOrigin(TRUSTED_REPOSITORY);
   }
 
   private async verifyFileAt(pathname: string, item: FileSnapshot): Promise<boolean> {
@@ -1633,6 +1656,7 @@ export class WorkbenchUpdater {
         const finalPreflight = await this.computeStatus();
         if (!this.sameCandidate(revalidated, finalPreflight)
           || !finalPreflight.candidateCommit
+          || !finalPreflight.origin
           || !revalidated.profile) throw new UpdateFailure("CANDIDATE_CHANGED");
         await this.validateGitmodules(finalPreflight.candidateCommit);
         const preparedRollback = rollbackInputs;
@@ -1646,6 +1670,9 @@ export class WorkbenchUpdater {
         await this.validateGitmodules();
         await this.git(["submodule", "sync", "--", "reprompter"]);
         await this.git(["submodule", "update", "--init", "--checkout", "--force", "--", "reprompter"]);
+        await this.assertExpectedOrigin(finalPreflight.origin);
+        await this.git(["remote", "set-url", "origin", TRUSTED_REPOSITORY, literalRegex(finalPreflight.origin)]);
+        await this.assertExpectedOrigin(TRUSTED_REPOSITORY);
         const updatedTree = await this.git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
         if (updatedTree.stdout !== "") throw new UpdateFailure("UPDATE_FAILED");
         await this.inspectSubmodules();
