@@ -781,22 +781,26 @@ describe("Pi Workbench updater apply transaction", () => {
     expect(git(failed.root, "remote", "get-url", "origin")).toBe(LEGACY_TRUSTED_REPOSITORY);
   }, 20_000);
 
-  test("revalidates the canonical origin after installation and preserves a concurrent replacement", async () => {
-    const fixture = await createFixture();
-    const replacement = "https://github.com/attacker/replacement.git";
-    fixture.controls.beforePostverify = () => {
-      git(fixture.root, "remote", "set-url", "origin", replacement);
-    };
+  test("rejects origin replacement both before migration and after installation without clobbering it", async () => {
+    for (const stage of ["before-migration", "after-install"] as const) {
+      const fixture = await createFixture();
+      const replacement = `https://github.com/attacker/${stage}.git`;
+      const replaceOrigin = () => {
+        git(fixture.root, "remote", "set-url", "origin", replacement);
+      };
+      if (stage === "before-migration") fixture.controls.afterMerge = replaceOrigin;
+      else fixture.controls.beforePostverify = replaceOrigin;
 
-    const result = await apply(fixture.updater(fakeReleases([release("v1.1.0")])));
-    expect(result).toMatchObject({ category: "blocked", code: "ROLLED_BACK", reload: false });
-    expect(git(fixture.root, "remote", "get-url", "origin")).toBe(TRUSTED_REPOSITORY);
-    const manifest = JSON.parse(await fs.readFile(
-      path.join(fixture.agentDir, "backups", "update", result.backupId!, "manifest.json"),
-      "utf8",
-    )) as { recovery: { failedCheckout: string } };
-    expect(git(manifest.recovery.failedCheckout, "remote", "get-url", "origin")).toBe(replacement);
-  }, 15_000);
+      const result = await apply(fixture.updater(fakeReleases([release("v1.1.0")])));
+      expect(result).toMatchObject({ category: "blocked", code: "ROLLED_BACK", reload: false });
+      expect(git(fixture.root, "remote", "get-url", "origin")).toBe(TRUSTED_REPOSITORY);
+      const manifest = JSON.parse(await fs.readFile(
+        path.join(fixture.agentDir, "backups", "update", result.backupId!, "manifest.json"),
+        "utf8",
+      )) as { recovery: { failedCheckout: string } };
+      expect(git(manifest.recovery.failedCheckout, "remote", "get-url", "origin")).toBe(replacement);
+    }
+  }, 20_000);
 
   test("preserves contained legacy submodule metadata through success and rollback", async () => {
     for (const failure of [false, true]) {
