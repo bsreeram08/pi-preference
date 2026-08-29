@@ -1343,6 +1343,20 @@ export class WorkbenchUpdater {
     }
   }
 
+  private async assertCanonicalOrigin(): Promise<void> {
+    const remotes = (await this.git(["remote"])).stdout.replace(/\r/g, "").split("\n").filter(Boolean);
+    const origins = (await this.git(["config", "--get-all", "remote.origin.url"])).stdout
+      .replace(/\r/g, "").split("\n").filter(Boolean);
+    const pushUrls = await this.git(["config", "--get-all", "remote.origin.pushurl"], [0, 1]);
+    if (remotes.length !== 1
+      || remotes[0] !== "origin"
+      || origins.length !== 1
+      || origins[0] !== TRUSTED_REPOSITORY
+      || pushUrls.stdout !== "") {
+      throw new UpdateFailure("UPDATE_FAILED");
+    }
+  }
+
   private async postverify(candidateCommit: string, profile: UpdateProfile): Promise<void> {
     const head = trimOneLine((await this.git(["rev-parse", "HEAD"])).stdout);
     if (head !== candidateCommit) throw new UpdateFailure("UPDATE_FAILED");
@@ -1351,6 +1365,7 @@ export class WorkbenchUpdater {
     await this.inspectSubmodules();
     if (await this.readProfile() !== profile) throw new UpdateFailure("UPDATE_FAILED");
     await this.assertExpectedLinks(profile);
+    await this.assertCanonicalOrigin();
   }
 
   private async verifyFileAt(pathname: string, item: FileSnapshot): Promise<boolean> {
@@ -1647,9 +1662,7 @@ export class WorkbenchUpdater {
         await this.git(["submodule", "sync", "--", "reprompter"]);
         await this.git(["submodule", "update", "--init", "--checkout", "--force", "--", "reprompter"]);
         await this.git(["remote", "set-url", "origin", TRUSTED_REPOSITORY]);
-        const migratedOrigins = (await this.git(["config", "--get-all", "remote.origin.url"])).stdout
-          .replace(/\r/g, "").split("\n").filter(Boolean);
-        if (migratedOrigins.length !== 1 || migratedOrigins[0] !== TRUSTED_REPOSITORY) throw new UpdateFailure("UPDATE_FAILED");
+        await this.assertCanonicalOrigin();
         const updatedTree = await this.git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
         if (updatedTree.stdout !== "") throw new UpdateFailure("UPDATE_FAILED");
         await this.inspectSubmodules();
