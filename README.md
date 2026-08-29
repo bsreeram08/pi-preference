@@ -128,6 +128,7 @@ The `workbench_agent_start`, `workbench_agent_message`, `workbench_agent_status`
 | `/plan [task]` | Interview, discover, analyze requirements, plan, and run Quality + Technical review |
 | `/start-work` | Execute the approved plan through the Execution Manager, Implementer, review, fixes, and verification |
 | `/autopilot [task]` | Let the Coordinator autonomously plan, implement, review, and verify a task |
+| `/automode [on\|off\|status]` | Keep the current Coordinator session building with conservative defaults and no routine questions; hard safety blockers still stop |
 | `/workflow-status` | Show current plan state and durable evidence paths |
 | `/preferences` | Review/edit Pi's durable user operating preferences |
 | `/remember [preference]` | Explicitly teach Pi a durable preference |
