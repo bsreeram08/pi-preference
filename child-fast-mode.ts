@@ -15,5 +15,6 @@ export function applyPriorityServiceTier(payload: unknown): unknown {
 }
 
 export default function childFastMode(pi: ExtensionAPI): void {
+  // Pi 0.84.x chains the handler's direct return value as the next provider payload.
   pi.on("before_provider_request", (event) => applyPriorityServiceTier(event.payload));
 }
