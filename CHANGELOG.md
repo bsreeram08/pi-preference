@@ -4,6 +4,7 @@
 
 ## 0.5.0 — 2026-08-29
 
+- Enabled provider priority service by default for child agents on the exact `openai-codex/gpt-5.6-luna` and `openai-codex/gpt-5.6-sol` routes through a trusted child-only payload extension, with strict project configuration disablement and unchanged launches for unsupported routes.
 - Added session-only `/automode on|off|status`, which directs the main Coordinator to keep building with conservative, reversible defaults instead of asking routine questions while preserving credential, destructive/high-risk, unrecoverable-ambiguity, permission, and verification stops.
 - Renamed the canonical public repository from `bsreeram08/pi-preference` to `bsreeram08/pi-workbench` so the repository name matches the product and existing package/installation identifiers; updater preflight temporarily accepts the exact legacy HTTPS origin and a confirmed successful update migrates it to the canonical URL, while rollback restores the legacy origin.
 - Changed cmux naming to stable, bounded `<project> · <task>` titles with task-focused workspace descriptions for Main Pi and interactive Workbench agents. Lifecycle completion/failure/needs-attention now stays in notifications, status, and progress instead of replacing work identity with generic labels such as `Pi session · done`; secret-like task text fails closed to the project name.

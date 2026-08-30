@@ -9,6 +9,7 @@ export interface AgentSpec {
   allowBash?: boolean;
   researchTools?: boolean;
   model?: string;
+  fastMode?: boolean;
 }
 
 export interface AgentResult {
