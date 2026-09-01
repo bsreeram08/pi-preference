@@ -52,6 +52,7 @@ import { registerWorkflow } from "./workflow.ts";
 import { registerSkillEvolution } from "./skill-evolution.ts";
 import { registerUserPreferences } from "./user-preferences.ts";
 import { registerWorkbenchMemory } from "./memory.ts";
+import { registerWorkbenchCases } from "./cases.ts";
 import { registerUsageCommand } from "./usage.ts";
 import { registerModelRouting } from "./model-routing.ts";
 import { registerAutomode } from "./automode.ts";
@@ -252,6 +253,10 @@ export default function piWorkbench(pi: ExtensionAPI) {
 
   registerUserPreferences(pi);
   registerWorkbenchMemory(pi, {
+    exec,
+    report: (title, body) => report(pi, title, body),
+  });
+  registerWorkbenchCases(pi, {
     exec,
     report: (title, body) => report(pi, title, body),
   });

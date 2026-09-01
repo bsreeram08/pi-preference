@@ -133,6 +133,7 @@ The `workbench_agent_start`, `workbench_agent_message`, `workbench_agent_status`
 | `/preferences` | Review/edit Pi's durable user operating preferences |
 | `/remember [preference]` | Explicitly teach Pi a durable preference |
 | `/memory [query]` | Show memory status/pending proposals, or recall relevant entries |
+| `/cases [status\|recall [query]]` | Show recent project continuity cases (intent → action → outcome → gap) |
 | `/skills-evolve` | Stage and validate all new/updated skills from trusted sources, then reload |
 | `/workbench-update [status\|apply]` | Manually inspect or explicitly confirm a trusted built-in update |
 | `/skills-evolution-status` | Show trusted sources, cadence, audit, and community concept feed |
@@ -314,6 +315,8 @@ Durable global state:
 Trusted skill evolution is disabled when no explicit configuration exists. The `--full` profile can opt into an allowlist containing `mattpocock/skills` and `emilkowalski/skills` with a 24-hour cadence; `/skills-evolve` triggers a one-time user-requested sync. Updates are installed into a temporary home first, frontmatter and size are validated, changed skills are backed up, and only then are they copied into `~/.agents/skills`. The Karpathy issue index is explicitly labeled as unverified hypothesis input; agents must validate an issue before applying it. Unknown third-party repositories are never auto-trusted.
 
 ## Workbench memory
+
+Workbench Cases are a separate continuity layer, not a second memory authority. `/cases` and `workbench_cases` store project-scoped **intent → action → outcome → gap** records outside the workspace (`~/.pi/agent/workbench/cases/v1/`). They inject a short L1 scan at session start, fail open if the store is missing or corrupt, reject secrets, and never auto-promote into `workbench_memory`. Failures with a gap are the useful cases. Git-already-known facts stay out.
 
 `workbench_memory` gives the Coordinator and child agents durable, evidence-backed memory without turning recalled text into authority:
 
