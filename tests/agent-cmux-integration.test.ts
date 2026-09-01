@@ -130,7 +130,7 @@ describe("AgentRunManager interactive cmux runtime", () => {
     try {
       const handle = await item.manager.start({ projectRoot: item.project, agent: AGENT, systemPrompt: "Prompt", task: "ABORTED", runId: "interactive-aborted" });
       await waitFor(async () => (await commands(item.log)).some((call) => call.at(-1) === "Project · ABORTED"));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await waitFor(async () => (await item.manager.status(item.project, handle.runId))[0]?.status === "running");
       expect((await item.manager.status(item.project, handle.runId))[0]?.status).toBe("running");
       expect((await commands(item.log)).some(([name]) => name === "close-surface")).toBe(false);
       await item.manager.message(handle.runId, "finish now", "steer");

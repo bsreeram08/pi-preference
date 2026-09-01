@@ -49,7 +49,7 @@ export function registerAgentRuntimeTools(pi: ExtensionAPI, options: RegisterAge
     promptGuidelines: [
       "Use workbench_agent_start when a read-only specialist should remain independently steerable or may need to ask the parent a question; use delegate_task for ordinary run-to-result delegation.",
       "Inside cmux, Workbench agent runs are real interactive Pi TUI sessions controlled through a private authenticated bridge; focus the tab to chat directly. Outside cmux, the first-party headless RPC executor remains available for compatibility.",
-      "The initial public slice permits only Bash-free read-only profiles and does not permit persistent mutation-capable agents.",
+      "Persistent starts are read-only, including Bash-capable specialists that need shell verification. Persistent mutation-capable agents remain deferred.",
     ],
     parameters: Type.Object({
       agent: AgentSchema,
@@ -61,7 +61,6 @@ export function registerAgentRuntimeTools(pi: ExtensionAPI, options: RegisterAge
       const base = getWorkflowAgentProfile(params.agent);
       if (!base) throw new Error(`Unknown Workbench agent: ${params.agent}`);
       if (!base.readOnly) throw new Error("Persistent mutation-capable agents are deferred until lease/worktree recovery is implemented. Use delegate_task for an approved single writer.");
-      if (base.allowBash) throw new Error("Persistent public agent starts require a Bash-free read-only profile. Use delegate_task for approved read-only profiles that need shell verification.");
       const root = await findProjectRoot(ctx.cwd, exec);
       const config = await loadConfig(getProjectPaths(root));
       const effort = (params.effort ?? "auto") as RoutingEffort;

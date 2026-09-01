@@ -1,6 +1,7 @@
 export type RoutingEffort = "auto" | "light" | "standard" | "heavy";
 export type ResolvedRoutingEffort = Exclude<RoutingEffort, "auto">;
 export type RoutingPolicy = "balanced" | "economy" | "quality" | "fixed";
+export type RoutingFamily = "codex" | "grok";
 export type RoutingThinking = "low" | "medium" | "high";
 
 export interface RoutingSignals {
@@ -23,6 +24,7 @@ export interface FixedModelRoute {
 
 export interface ModelRoutingState {
   policy: RoutingPolicy;
+  family?: RoutingFamily;
   fixed?: FixedModelRoute;
 }
 
@@ -54,11 +56,23 @@ export const BALANCED_ROUTES: Record<ResolvedRoutingEffort, FixedModelRoute> = {
   heavy: { model: "openai-codex/gpt-5.6-sol:high", thinking: "high" },
 };
 
+export const GROK_PRIMARY_ROUTE: FixedModelRoute = {
+  model: "xai/grok-4.6:high",
+  thinking: "high",
+};
+
+export const GROK_BALANCED_ROUTES: Record<ResolvedRoutingEffort, FixedModelRoute> = {
+  light: { model: "xai/grok-4.6:low", thinking: "low" },
+  standard: { model: "xai/grok-4.6:medium", thinking: "medium" },
+  heavy: GROK_PRIMARY_ROUTE,
+};
+
 export const ROUTING_MODEL_ALIASES: Record<string, FixedModelRoute> = {
   spark: { model: "openai-codex/gpt-5.3-codex-spark:low", thinking: "low" },
   luna: BALANCED_ROUTES.light,
   terra: BALANCED_ROUTES.standard,
   sol: BALANCED_ROUTES.heavy,
+  grok: GROK_PRIMARY_ROUTE,
 };
 
 export const READ_ONLY_BUDGETS: Record<ResolvedRoutingEffort, ReadOnlyBudget> = {
@@ -78,6 +92,20 @@ const POLICY_ROUTES: Record<Exclude<RoutingPolicy, "fixed">, Record<ResolvedRout
     light: BALANCED_ROUTES.standard,
     standard: BALANCED_ROUTES.heavy,
     heavy: BALANCED_ROUTES.heavy,
+  },
+};
+
+const GROK_POLICY_ROUTES: Record<Exclude<RoutingPolicy, "fixed">, Record<ResolvedRoutingEffort, FixedModelRoute>> = {
+  balanced: GROK_BALANCED_ROUTES,
+  economy: {
+    light: GROK_BALANCED_ROUTES.light,
+    standard: GROK_BALANCED_ROUTES.light,
+    heavy: GROK_BALANCED_ROUTES.standard,
+  },
+  quality: {
+    light: GROK_BALANCED_ROUTES.standard,
+    standard: GROK_BALANCED_ROUTES.heavy,
+    heavy: GROK_BALANCED_ROUTES.heavy,
   },
 };
 
@@ -137,6 +165,14 @@ export function normalizeRoutingPolicy(value: unknown): Exclude<RoutingPolicy, "
   return value === "economy" || value === "quality" || value === "balanced" ? value : "balanced";
 }
 
+export function normalizeRoutingFamily(value: unknown): RoutingFamily {
+  return value === "grok" ? "grok" : "codex";
+}
+
+export function routingFamily(state: ModelRoutingState | undefined): RoutingFamily {
+  return state?.family === "grok" ? "grok" : "codex";
+}
+
 export function splitModelRoute(model: string, fallbackThinking: RoutingThinking = "medium"): FixedModelRoute {
   const trimmed = model.trim();
   const match = trimmed.match(/:(low|medium|high)$/);
@@ -149,10 +185,10 @@ export function splitModelRoute(model: string, fallbackThinking: RoutingThinking
 export function parseFixedRoutingModel(value: string): FixedModelRoute | undefined {
   const alias = resolveRoutingModelAlias(value);
   if (alias) return { ...alias };
-  const match = value.trim().match(/^openai-codex\/([A-Za-z0-9._-]+)(?::(low|medium|high))?$/);
+  const match = value.trim().match(/^(openai-codex|xai)\/([A-Za-z0-9._-]+)(?::(low|medium|high))?$/);
   if (!match) return undefined;
-  const thinking = (match[2] as RoutingThinking | undefined) ?? "medium";
-  return { model: `openai-codex/${match[1]}:${thinking}`, thinking };
+  const thinking = (match[3] as RoutingThinking | undefined) ?? "medium";
+  return { model: `${match[1]}/${match[2]}:${thinking}`, thinking };
 }
 
 export function routeTask(request: RoutingRequest): ModelRoute {
@@ -161,9 +197,11 @@ export function routeTask(request: RoutingRequest): ModelRoute {
   const visual = request.visual ?? VISUAL_PATTERN.test(request.task);
   const policy = request.policy ?? BALANCED_ROUTING_STATE;
   const policyName = policy.policy === "fixed" && policy.fixed ? "fixed" : policy.policy === "fixed" ? "balanced" : policy.policy;
+  const family = routingFamily(policy);
+  const table = family === "grok" ? GROK_POLICY_ROUTES : POLICY_ROUTES;
   let selected = policyName === "fixed"
     ? policy.fixed!
-    : POLICY_ROUTES[policyName][effort];
+    : table[policyName][effort];
 
   if (visual && /codex-spark/i.test(selected.model)) {
     selected = BALANCED_ROUTES.standard;
@@ -182,7 +220,7 @@ export function routeTask(request: RoutingRequest): ModelRoute {
       : "bounded low-risk task";
   const reason = policyName === "fixed"
     ? `fixed session override; ${basis}`
-    : `${policyName} policy; ${basis}${visual ? "; visual work avoids Spark" : ""}`;
+    : `${family === "grok" ? "grok " : ""}${policyName} policy; ${basis}${visual ? "; visual work avoids Spark" : ""}`;
 
   return {
     effort,
@@ -286,8 +324,10 @@ export function resolveRoutingModelAlias(value: string): FixedModelRoute | undef
 
 export function parseSessionRoutingDirective(text: string): ModelRoutingState | undefined {
   const normalized = text.trim().toLowerCase().replace(/[.!]$/, "");
-  const fixed = normalized.match(/^(?:please )?use (spark|luna|terra|sol) for everything(?: this session)?$/);
+  const fixed = normalized.match(/^(?:please )?use (spark|luna|terra|sol|grok) for everything(?: this session)?$/);
   if (fixed) return { policy: "fixed", fixed: resolveRoutingModelAlias(fixed[1])! };
+  const family = normalized.match(/^(?:please )?use (codex|grok) routing(?: this session)?$/);
+  if (family) return family[1] === "grok" ? { policy: "balanced", family: "grok" } : { policy: "balanced" };
   const policy = normalized.match(/^(?:please )?use (balanced|economy|quality) routing(?: this session)?$/);
   return policy ? { policy: policy[1] as Exclude<RoutingPolicy, "fixed"> } : undefined;
 }
