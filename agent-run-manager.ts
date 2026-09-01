@@ -9,14 +9,16 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AgentRpcConnection, AgentRpcProtocolError, MAX_AGENT_RPC_STDERR_BYTES, type AgentRpcEvent, type RpcResponse } from "./agent-rpc.ts";
 import { AgentRunStore, digestAgentRunText, type AgentRunPaths, type AgentRunQuestion, type AgentRunRecord, type AgentRunStatus } from "./agent-run-store.ts";
 import { CHILD_BRIDGE_EXTENSION_PATH, type AgentSessionHost } from "./agent-cmux-session.ts";
+import { supportsFastModeRoute } from "./child-fast-mode.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { inspectProcessStart } from "./exclusive-lease.ts";
 import type { AgentResult, AgentSpec } from "./types.ts";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const CHILD_TOOLS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-tools.ts");
+const CHILD_FAST_MODE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-fast-mode.ts");
 const TRUSTED_CHILD_FILES = [
-  "agent-child-bridge.ts", "agent-cmux-bridge.mjs", "agent-cmux-session.ts", "child-tools.ts",
+  "agent-child-bridge.ts", "agent-cmux-bridge.mjs", "agent-cmux-session.ts", "child-fast-mode.ts", "child-tools.ts",
   "memory-access.ts", "memory-store.ts", "memory.ts", "research-tools.ts", "research-types.ts", "research-browser.mjs",
 ];
 const TERMINAL_STATUSES = new Set<AgentRunStatus>(["completed", "failed", "cancelled", "interrupted", "orphaned"]);
@@ -74,6 +76,7 @@ export interface AgentRunManagerOptions {
   readonly invocation?: (args: string[]) => { command: string; args: string[] };
   readonly environment?: NodeJS.ProcessEnv;
   readonly defaultModel?: string;
+  readonly defaultFastMode?: boolean;
   readonly terminationGraceMs?: number;
   readonly killGraceMs?: number;
 }
@@ -331,6 +334,7 @@ export class AgentRunManager {
   private readonly invocation: (args: string[]) => { command: string; args: string[] };
   private readonly environment: NodeJS.ProcessEnv;
   private defaultModel?: string;
+  private readonly defaultFastMode: boolean;
   private readonly terminationGraceMs: number;
   private readonly killGraceMs: number;
   private dashboard?: WorkbenchDashboardController;
@@ -345,6 +349,7 @@ export class AgentRunManager {
     this.invocation = options.invocation ?? defaultAgentInvocation;
     this.environment = options.environment ?? process.env;
     this.defaultModel = options.defaultModel;
+    this.defaultFastMode = options.defaultFastMode ?? true;
     this.terminationGraceMs = options.terminationGraceMs ?? 1_500;
     this.killGraceMs = options.killGraceMs ?? 5_000;
   }
@@ -369,6 +374,7 @@ export class AgentRunManager {
     const routeModel = request.agent.model ?? this.defaultModel;
     if (interactive && !routeModel) throw new Error("Interactive Workbench agents require a resolved model route before launch.");
     const model = splitModel(routeModel);
+    const fastMode = (request.agent.fastMode ?? this.defaultFastMode) && supportsFastModeRoute(model.identity);
     const timestamp = this.now().toISOString();
     const baseRecord = await this.store.save(paths, {
       version: 1,
@@ -405,6 +411,7 @@ export class AgentRunManager {
       "--session-dir", paths.sessions,
       ...(interactive ? ["--session-id", runId] : []),
       "--no-extensions", "--extension", CHILD_TOOLS_PATH,
+      ...(fastMode ? ["--extension", CHILD_FAST_MODE_PATH] : []),
       ...(interactive ? ["--extension", CHILD_BRIDGE_EXTENSION_PATH] : []),
       "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-themes", "--no-approve",
       "--append-system-prompt", paths.systemPrompt,

@@ -267,6 +267,7 @@ describe("Pi workflow routing", () => {
     expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Find one symbol.")?.model).toBe("openai-codex/gpt-5.6-luna:low");
     expect(resolveWorkflowAgent("codebase-explorer", DEFAULT_CONFIG, "Investigate a hard cross-cutting concurrency root cause across services.")?.model).toBe("openai-codex/gpt-5.6-sol:high");
     expect(resolveWorkflowAgent("planner", DEFAULT_CONFIG, "Draft a bounded local rename plan.", "light")?.model).toBe("openai-codex/gpt-5.6-luna:low");
+    expect(resolveWorkflowAgent("planner", { ...DEFAULT_CONFIG, fastMode: false })?.fastMode).toBe(false);
     expect(getWorkflowAgentProfile("task implementer")?.id).toBe("task-implementer");
   });
 
@@ -369,12 +370,14 @@ describe("project settings", () => {
       maxFixLoops: -5,
       defaultImplementationSession: "invalid",
       qmdEnabled: "yes",
+      fastMode: "yes",
     })).toEqual({
       maxCouncilAgents: 8,
       parallelImplementationWorkers: 2,
       maxFixLoops: 1,
       defaultImplementationSession: "ask",
       qmdEnabled: true,
+      fastMode: true,
       maxResearchAgents: 5,
       researchSourcesPerTrack: 6,
       researchOutputDir: "research",
@@ -394,6 +397,12 @@ describe("project settings", () => {
       modelRoutingPolicy: "balanced",
       modelRoutingFamily: "codex",
     });
+  });
+
+  test("defaults fast mode on, persists explicit false, and rejects invalid values", () => {
+    expect(normalizeConfig({}).fastMode).toBe(true);
+    expect(normalizeConfig({ fastMode: false }).fastMode).toBe(false);
+    expect(normalizeConfig({ fastMode: "false" }).fastMode).toBe(true);
   });
 
   test("uses opinionated defaults for missing values", () => {

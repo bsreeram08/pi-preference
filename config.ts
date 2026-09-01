@@ -9,6 +9,7 @@ export interface WorkbenchConfig {
   maxFixLoops: number;
   defaultImplementationSession: "ask" | "same" | "new";
   qmdEnabled: boolean;
+  fastMode: boolean;
   maxResearchAgents: number;
   researchSourcesPerTrack: number;
   researchOutputDir: string;
@@ -35,6 +36,7 @@ export const DEFAULT_CONFIG: WorkbenchConfig = {
   maxFixLoops: 5,
   defaultImplementationSession: "ask",
   qmdEnabled: true,
+  fastMode: true,
   maxResearchAgents: 5,
   researchSourcesPerTrack: 6,
   researchOutputDir: "research",
@@ -93,6 +95,7 @@ export function normalizeConfig(value: unknown): WorkbenchConfig {
     defaultImplementationSession:
       session === "same" || session === "new" || session === "ask" ? session : DEFAULT_CONFIG.defaultImplementationSession,
     qmdEnabled: typeof input.qmdEnabled === "boolean" ? input.qmdEnabled : DEFAULT_CONFIG.qmdEnabled,
+    fastMode: typeof input.fastMode === "boolean" ? input.fastMode : DEFAULT_CONFIG.fastMode,
     maxResearchAgents: boundedInteger(input.maxResearchAgents, DEFAULT_CONFIG.maxResearchAgents, 3, 6),
     researchSourcesPerTrack: boundedInteger(input.researchSourcesPerTrack, DEFAULT_CONFIG.researchSourcesPerTrack, 3, 12),
     researchOutputDir: safeRelativeDirectory(input.researchOutputDir),

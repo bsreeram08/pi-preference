@@ -27,6 +27,7 @@ const requiredFiles = [
   "agent-cmux-bridge.mjs",
   "agent-cmux-session.ts",
   "cmux-naming.ts",
+  "child-fast-mode.ts",
   "child-tools.ts",
   "LICENSE",
   "CODE_OF_CONDUCT.md",

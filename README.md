@@ -230,6 +230,7 @@ Defaults in `config.json`:
   "maxFixLoops": 5,
   "defaultImplementationSession": "ask",
   "qmdEnabled": true,
+  "fastMode": true,
   "maxResearchAgents": 5,
   "researchSourcesPerTrack": 6,
   "researchOutputDir": "research",
@@ -252,6 +253,12 @@ Defaults in `config.json`:
 ```
 
 `modelRoutingPolicy` is the durable project default and accepts `balanced`, `economy`, or `quality`; the shipped default is balanced. `modelRoutingFamily` accepts `codex` or `grok` and is written by `/model-routing grok --default` or the customize menu; the shipped default is Codex. The older `workflowFastModel`, `workflowPlanningModel`, `workflowDeepModel`, and `workflowReviewModel` keys remain normalized for backward-compatible project files, but workflow delegation now routes each lane from the task rather than assigning models by role. Research model keys retain their existing subsystem behavior. Model identifiers are routing defaults, not bundled credentials.
+
+### GPT child fast mode
+
+`fastMode` defaults to `true`. When enabled, Workbench loads a repository-owned child-only extension for the exact routes `openai-codex/gpt-5.6-luna` and `openai-codex/gpt-5.6-sol` (with any thinking suffix stripped before matching). The extension preserves the provider request payload and sets `service_tier` to `priority`. All other models and providers launch with their normal request payload and extension loadout. Set `"fastMode": false` in the project's `.pi/pi-workbench/config.json` to disable priority service for project workflow agents.
+
+Priority service can consume plan quota faster and may cost more than standard processing, depending on the authenticated OpenAI account and billing plan. Check the current provider terms and usage limits before leaving it enabled for high-volume delegation.
 
 ## Research retrieval
 
