@@ -24,6 +24,7 @@ describe("Workbench cases", () => {
         action: "Added /model-routing grok --default.",
         outcome: "PR merged.",
       });
+      await Bun.sleep(5);
       await store.retain({
         intent: "Interactive explorer tab.",
         action: "Started technical-reviewer.",
@@ -32,9 +33,11 @@ describe("Workbench cases", () => {
         outcomeKind: "failure",
       });
       const recalled = await store.recall();
-      expect(recalled[0]?.outcomeKind).toBe("failure");
-      expect(recalled[0]?.gap).toContain("Persistent read-only");
-      expect(recalled[1]?.outcomeKind).toBe("success");
+      const failed = recalled.find((entry) => entry.outcomeKind === "failure");
+      const succeeded = recalled.find((entry) => entry.outcomeKind === "success");
+      expect(failed?.gap).toContain("Persistent read-only");
+      expect(succeeded?.intent).toContain("Ship routing family");
+      expect(recalled.map((entry) => entry.id)).toEqual([failed?.id, succeeded?.id]);
       const l1 = renderCaseL1(recalled);
       expect(l1).toContain("continuity only");
       expect(l1).toContain("failure");

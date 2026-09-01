@@ -150,7 +150,7 @@ export class WorkbenchCaseStore {
     const outcomeKind = input.outcomeKind ?? inferOutcomeKind(outcome, gap);
     if (outcomeKind !== "success" && !gap) throw new Error("Failure and blocked cases require a gap.");
     const now = new Date().toISOString();
-    const id = `${now.replace(/[-:.TZ]/g, "").slice(0, 14)}-${randomUUID().slice(0, 8)}`;
+    const id = `${now.replace(/[-:.TZ]/g, "")}-${randomUUID().slice(0, 8)}`;
     const base: Omit<WorkbenchCase, "checksum"> = {
       version: 1,
       id,
