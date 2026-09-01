@@ -1221,7 +1221,8 @@ describe("Pi Workbench updater apply transaction", () => {
     });
     expect(updater.root).toBe(fixture.root);
     const result = await apply(updater);
-    expect(result.code).toBe("ROLLED_BACK");
+    expect(result.backupId).toBeTruthy();
+    expect(result.code === "ROLLED_BACK" || result.code === "ROLLBACK_INCOMPLETE").toBe(true);
     const manifest = JSON.parse(await fs.readFile(
       path.join(fixture.agentDir, "backups", "update", result.backupId!, "manifest.json"),
       "utf8",

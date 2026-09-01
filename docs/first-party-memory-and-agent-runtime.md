@@ -1,6 +1,6 @@
 # First-party memory and interactive-agent roadmap
 
-> Status: architecture exploration plus the first Agent Runtime and first-party interactive cmux Pi TUI session slice. No external reference package was installed or executed. Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
+> Status: architecture exploration plus the first Agent Runtime, interactive cmux Pi TUI sessions, and a first Cases continuity slice (intent → action → outcome → gap). No external reference package was installed or executed. Richer Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
 > Reference snapshots: `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, and its cited upstream cmux adapter at `HazAT/pi-interactive-subagents@c100577ebf73`.
 
 ## Decision

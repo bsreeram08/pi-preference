@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Added first-party Workbench Cases: project-scoped intent/action/outcome/gap continuity records with `/cases` and `workbench_cases`, L1 recall at session start, secret rejection, and no auto-promotion into `workbench_memory`.
 - Allowed persistent `workbench_agent_start` for read-only Bash-capable specialists such as Codebase Explorer and Technical Reviewer, so interactive cmux tabs no longer fail the Bash-free public-slice gate; persistent mutation-capable agents remain deferred.
 - Added an xAI Grok 4.6 child-routing family with `/model-routing grok` for this session, `/model-routing grok --default` to persist the project family, and a TUI customize menu from `/model-routing`; Codex remains the shipped default until you change it.
 
