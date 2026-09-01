@@ -392,6 +392,7 @@ describe("project settings", () => {
       workflowDeepModel: "openai-codex/gpt-5.6-sol:medium",
       workflowReviewModel: "openai-codex/gpt-5.6-terra:high",
       modelRoutingPolicy: "balanced",
+      modelRoutingFamily: "codex",
     });
   });
 
@@ -521,6 +522,10 @@ describe("durable project state", () => {
 
   test("council implementation mismatch launches neither workers nor a new session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-council-command-"));
+    const isolatedAgentDir = path.join(await fs.realpath(root), ".isolated-agent");
+    await fs.mkdir(isolatedAgentDir, { recursive: true });
+    const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = await fs.realpath(isolatedAgentDir);
     const paths = getProjectPaths(root);
     const original: CouncilSession = {
       version: 1,
@@ -578,6 +583,8 @@ describe("durable project state", () => {
       expect((await loadSession(paths))?.topic).toBe("Replacement authority");
       expect(newHarness.reports.at(-1)?.body).toContain("rerun");
     } finally {
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

@@ -28,7 +28,7 @@ describe("first-party agent runtime tool surface", () => {
     expect(tools.find((tool) => tool.name === "workbench_agent_focus")?.description).toContain("cmux tab");
   });
 
-  test("rejects persistent Bash-capable profiles before project discovery", async () => {
+  test("rejects persistent mutation-capable profiles before project discovery", async () => {
     const tools: any[] = [];
     registerAgentRuntimeTools({ registerTool(tool: unknown) { tools.push(tool); } } as any, {
       manager: {} as any,
@@ -36,8 +36,34 @@ describe("first-party agent runtime tool surface", () => {
       getRoutingState: () => ({ policy: "balanced" }),
     });
     const start = tools.find((tool) => tool.name === "workbench_agent_start");
-    await expect(start.execute("call", { agent: "codebase-explorer", task: "Inspect." }, undefined, undefined, { cwd: "/missing" }))
-      .rejects.toThrow("Bash-free read-only profile");
+    await expect(start.execute("call", { agent: "implementer", task: "Change files." }, undefined, undefined, { cwd: "/missing" }))
+      .rejects.toThrow("Persistent mutation-capable agents are deferred");
+  });
+
+  test("starts persistent read-only Bash-capable profiles", async () => {
+    const tools: any[] = [];
+    let started: any;
+    registerAgentRuntimeTools({
+      registerTool(tool: unknown) { tools.push(tool); },
+      appendEntry() {},
+    } as any, {
+      manager: {
+        async start(request: unknown) {
+          started = request;
+          return { runId: "agent-codebase-explorer-1", completion: new Promise(() => {}) };
+        },
+      } as any,
+      exec: async () => ({ stdout: "/project", stderr: "", code: 0 }),
+      getRoutingState: () => ({ policy: "balanced" }),
+    });
+    const start = tools.find((tool) => tool.name === "workbench_agent_start");
+    const result = await start.execute("call", { agent: "codebase-explorer", task: "Inspect the repository map." }, undefined, undefined, { cwd: "/project" });
+    expect(started).toMatchObject({
+      projectRoot: "/project",
+      agent: { id: "codebase-explorer", readOnly: true, allowBash: true },
+      task: "Inspect the repository map.",
+    });
+    expect(result.details.runId).toBe("agent-codebase-explorer-1");
   });
 
   test("keeps the legacy launcher seam as a facade over the shared manager", async () => {

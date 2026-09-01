@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ProjectPaths } from "./types.ts";
-import { normalizeRoutingPolicy, type RoutingPolicy } from "./routing.ts";
+import { normalizeRoutingFamily, normalizeRoutingPolicy, type RoutingFamily, type RoutingPolicy } from "./routing.ts";
 
 export interface WorkbenchConfig {
   maxCouncilAgents: number;
@@ -26,6 +26,7 @@ export interface WorkbenchConfig {
   workflowDeepModel: string | null;
   workflowReviewModel: string | null;
   modelRoutingPolicy: Exclude<RoutingPolicy, "fixed">;
+  modelRoutingFamily: RoutingFamily;
 }
 
 export const DEFAULT_CONFIG: WorkbenchConfig = {
@@ -51,6 +52,7 @@ export const DEFAULT_CONFIG: WorkbenchConfig = {
   workflowDeepModel: "openai-codex/gpt-5.6-sol:medium",
   workflowReviewModel: "openai-codex/gpt-5.6-terra:high",
   modelRoutingPolicy: "balanced",
+  modelRoutingFamily: "codex",
 };
 
 export function configPath(paths: ProjectPaths): string {
@@ -134,6 +136,7 @@ export function normalizeConfig(value: unknown): WorkbenchConfig {
     workflowDeepModel: optionalModel(input, "workflowDeepModel", DEFAULT_CONFIG.workflowDeepModel),
     workflowReviewModel: optionalModel(input, "workflowReviewModel", DEFAULT_CONFIG.workflowReviewModel),
     modelRoutingPolicy: normalizeRoutingPolicy(input.modelRoutingPolicy),
+    modelRoutingFamily: normalizeRoutingFamily(input.modelRoutingFamily),
   };
 }
 

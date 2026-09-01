@@ -1,8 +1,24 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { normalizeConfig } from "../config.ts";
-import { MODEL_ROUTING_ENTRY, MODEL_ROUTING_RECEIPT_ENTRY, registerModelRouting, restoreModelRoutingState } from "../model-routing.ts";
+import {
+  MODEL_ROUTING_ENTRY,
+  MODEL_ROUTING_RECEIPT_ENTRY,
+  parseModelRoutingCommand,
+  parseRoutingMenuFamily,
+  parseRoutingMenuPolicy,
+  parseRoutingMenuScope,
+  readDurableRouting,
+  registerModelRouting,
+  restoreModelRoutingState,
+  writeDurableRouting,
+} from "../model-routing.ts";
 import {
   BALANCED_ROUTES,
+  GROK_BALANCED_ROUTES,
+  GROK_PRIMARY_ROUTE,
   READ_ONLY_BUDGETS,
   classifyRoutingEffort,
   formatRoutingReceipt,
@@ -65,8 +81,9 @@ describe("adaptive model routing", () => {
     expect(routeTask({ task: "Implement a bounded fix.", effort: "light", readOnly: false }).budget).toBeUndefined();
   });
 
-  test("accepts only canonical OpenAI Codex fixed routes and enforces a thinking suffix", () => {
+  test("accepts Codex and xAI Grok fixed routes and enforces a thinking suffix", () => {
     expect(parseFixedRoutingModel("sol")).toEqual(BALANCED_ROUTES.heavy);
+    expect(parseFixedRoutingModel("grok")).toEqual(GROK_PRIMARY_ROUTE);
     expect(parseFixedRoutingModel("openai-codex/custom-model")).toEqual({
       model: "openai-codex/custom-model:medium",
       thinking: "medium",
@@ -75,8 +92,26 @@ describe("adaptive model routing", () => {
       model: "openai-codex/custom-model:high",
       thinking: "high",
     });
+    expect(parseFixedRoutingModel("xai/grok-4.6")).toEqual({
+      model: "xai/grok-4.6:medium",
+      thinking: "medium",
+    });
+    expect(parseFixedRoutingModel("xai/grok-4.6:high")).toEqual(GROK_PRIMARY_ROUTE);
     expect(parseFixedRoutingModel("provider/custom-model:high")).toBeUndefined();
     expect(parseFixedRoutingModel("openai-codex/bad model")).toBeUndefined();
+  });
+
+  test("routes the Grok 4.6 family by thinking level without changing Codex defaults", () => {
+    const request = { task: "Review the bounded change and run tests.", effort: "standard" as const };
+    expect(routeTask(request).model).toBe("openai-codex/gpt-5.6-terra:medium");
+    expect(routeTask({ ...request, policy: { policy: "balanced", family: "grok" } }).model).toBe(GROK_BALANCED_ROUTES.standard.model);
+    expect(routeTask({ task: "Find one symbol.", effort: "light", policy: { policy: "balanced", family: "grok" } }).model)
+      .toBe(GROK_BALANCED_ROUTES.light.model);
+    expect(routeTask({
+      task: "Investigate a hard cross-cutting concurrency root cause across services.",
+      effort: "heavy",
+      policy: { policy: "quality", family: "grok" },
+    }).model).toBe(GROK_BALANCED_ROUTES.heavy.model);
   });
 
   test("uses a deterministic conservative auto classifier", () => {
@@ -101,6 +136,12 @@ describe("session routing controls", () => {
       fixed: { model: "openai-codex/gpt-5.6-luna:low", thinking: "low" },
     });
     expect(parseSessionRoutingDirective("Use economy routing this session.")).toEqual({ policy: "economy" });
+    expect(parseSessionRoutingDirective("use grok for everything this session")).toEqual({
+      policy: "fixed",
+      fixed: GROK_PRIMARY_ROUTE,
+    });
+    expect(parseSessionRoutingDirective("use grok routing this session")).toEqual({ policy: "balanced", family: "grok" });
+    expect(parseSessionRoutingDirective("use codex routing this session")).toEqual({ policy: "balanced" });
     expect(parseSessionRoutingDirective("use sol for everything and inspect this file")).toBeUndefined();
   });
 
@@ -110,6 +151,14 @@ describe("session routing controls", () => {
       data: { version: 1, state: { policy: "fixed", fixed: { model: "openai-codex/gpt-5.6-sol:high", thinking: "high" } } },
     };
     expect(restoreModelRoutingState(entry.data)).toEqual(entry.data.state);
+    expect(restoreModelRoutingState({
+      version: 1,
+      state: { policy: "balanced", family: "grok" },
+    })).toEqual({ policy: "balanced", family: "grok" });
+    expect(restoreModelRoutingState({
+      version: 1,
+      state: { policy: "fixed", fixed: { model: "xai/grok-4.6:high", thinking: "high" } },
+    })).toEqual({ policy: "fixed", fixed: GROK_PRIMARY_ROUTE });
     expect(restoreModelRoutingState({ version: 1, state: { policy: "fixed", fixed: { model: "provider/custom:high", thinking: "high" } } })).toEqual({ policy: "balanced" });
     expect(restoreModelRoutingState({ version: 1, state: { policy: "fixed", fixed: { model: "openai-codex/custom", thinking: "medium" } } })).toEqual({ policy: "balanced" });
     expect(restoreModelRoutingState({ version: 2, state: { policy: "quality" } })).toEqual({ policy: "balanced" });
@@ -141,6 +190,7 @@ describe("session routing controls", () => {
       sessionManager: { getBranch: () => [] },
       modelRegistry: {
         find(provider: string, model: string) {
+          if (provider === "xai" && model === "grok-4.6") return { provider, id: model };
           return provider === "openai-codex" && [
             "gpt-5.3-codex-spark",
             "gpt-5.6-luna",
@@ -154,10 +204,13 @@ describe("session routing controls", () => {
     await handlers.get("session_start")?.[0]?.({}, ctx);
     await commands.get("model-routing")?.("fixed sol", ctx);
     await handlers.get("input")?.[0]?.({ text: "use terra for everything this session" }, ctx);
+    await commands.get("model-routing")?.("grok", ctx);
+    await commands.get("model-routing")?.("fixed grok", ctx);
     await commands.get("model-routing")?.("fixed provider/not-allowed:high", ctx);
     await commands.get("model-routing")?.("fixed openai-codex/not-installed:high", ctx);
+    await commands.get("model-routing")?.("fixed xai/not-installed:high", ctx);
 
-    expect(entries.filter((entry) => entry.customType === MODEL_ROUTING_ENTRY)).toHaveLength(2);
+    expect(entries.filter((entry) => entry.customType === MODEL_ROUTING_ENTRY)).toHaveLength(4);
     expect(entries.filter((entry) => entry.customType === MODEL_ROUTING_RECEIPT_ENTRY)).toHaveLength(1);
     expect(parentModelSets).toBe(0);
     expect(parentThinkingSets).toBe(0);
@@ -231,7 +284,100 @@ describe("legacy routing config normalization", () => {
     expect(config.workflowFastModel).toBe("legacy/fast:low");
     expect(config.workflowPlanningModel).toBe("legacy/plan:high");
     expect(config.modelRoutingPolicy).toBe("balanced");
+    expect(config.modelRoutingFamily).toBe("codex");
     expect(normalizeConfig({ modelRoutingPolicy: "quality" }).modelRoutingPolicy).toBe("quality");
     expect(normalizeConfig({ modelRoutingPolicy: "fixed" }).modelRoutingPolicy).toBe("balanced");
+    expect(normalizeConfig({ modelRoutingFamily: "grok" }).modelRoutingFamily).toBe("grok");
+  });
+});
+
+describe("durable family defaults and customize menu", () => {
+  test("parses menu, --default, and rejects durable fixed routes", () => {
+    expect(parseModelRoutingCommand("")).toEqual({ kind: "open" });
+    expect(parseModelRoutingCommand("status")).toEqual({ kind: "status" });
+    expect(parseModelRoutingCommand("menu")).toEqual({ kind: "menu" });
+    expect(parseModelRoutingCommand("grok --default")).toEqual({ kind: "family", family: "grok", makeDefault: true });
+    expect(parseModelRoutingCommand("--default grok")).toEqual({ kind: "family", family: "grok", makeDefault: true });
+    expect(parseModelRoutingCommand("codex --default")).toEqual({ kind: "family", family: "codex", makeDefault: true });
+    expect(parseModelRoutingCommand("quality --default")).toEqual({ kind: "policy", policy: "quality", makeDefault: true });
+    expect(parseModelRoutingCommand("fixed grok --default").kind).toBe("usage");
+    expect(parseRoutingMenuFamily("Grok 4.6 (low/medium/high)")).toBe("grok");
+    expect(parseRoutingMenuPolicy("Balanced")).toBe("balanced");
+    expect(parseRoutingMenuScope("Save as project default")).toBe(true);
+    expect(parseRoutingMenuScope("This session only")).toBe(false);
+  });
+
+  test("writes only --default family changes into project config", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-workbench-routing-"));
+    const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+    const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+    const pi = {
+      registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+        commands.set(name, command.handler);
+      },
+      on(name: string, handler: (event: any, ctx: any) => unknown) {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      appendEntry() {},
+      registerEntryRenderer() {},
+    } as any;
+    registerModelRouting(pi);
+    const ctx = {
+      cwd: root,
+      hasUI: false,
+      ui: { setStatus() {}, notify() {} },
+      sessionManager: { getBranch: () => [] },
+      modelRegistry: { find: () => undefined },
+    };
+    try {
+      await handlers.get("session_start")?.[0]?.({}, ctx);
+      await commands.get("model-routing")?.("grok", ctx);
+      expect(readDurableRouting(root)).toEqual({ policy: "balanced", family: "codex" });
+      await commands.get("model-routing")?.("grok --default", ctx);
+      expect(readDurableRouting(root)).toEqual({ policy: "balanced", family: "grok" });
+      const written = JSON.parse(readFileSync(join(root, ".pi", "pi-workbench", "config.json"), "utf8"));
+      expect(written).toMatchObject({ modelRoutingFamily: "grok", modelRoutingPolicy: "balanced" });
+      await commands.get("model-routing")?.("codex --default", ctx);
+      expect(readDurableRouting(root).family).toBe("codex");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("interactive menu can save Grok 4.6 as the project default", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-workbench-routing-menu-"));
+    const answers = [
+      "Grok 4.6 (low/medium/high)",
+      "Balanced",
+      "Save as project default",
+    ];
+    const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+    const pi = {
+      registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+        commands.set(name, command.handler);
+      },
+      on() {},
+      appendEntry() {},
+      registerEntryRenderer() {},
+    } as any;
+    registerModelRouting(pi);
+    const ctx = {
+      cwd: root,
+      hasUI: true,
+      ui: {
+        setStatus() {},
+        notify() {},
+        select: async () => answers.shift(),
+      },
+      sessionManager: { getBranch: () => [] },
+      modelRegistry: { find: () => undefined },
+    };
+    try {
+      await commands.get("model-routing")?.("", ctx);
+      expect(readDurableRouting(root)).toEqual({ policy: "balanced", family: "grok" });
+      expect(writeDurableRouting(root, { family: "codex" })).toContain("config.json");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
