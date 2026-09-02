@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Read-only Workbench agents that receive `bash` now fail closed on ordinary workspace mutations (redirects, rm/mv/cp, git write verbs, package installs). This is a policy filter, not a sandbox.
 - Durable `/model-routing --default` now writes the project git root config instead of a nested cwd, and natural-language session directives keep the other routing axis (family vs policy) instead of resetting it.
 
 ## 0.6.0 — 2026-09-02

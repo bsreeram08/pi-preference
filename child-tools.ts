@@ -19,6 +19,7 @@ import {
   type MemoryScope,
 } from "./memory-store.ts";
 import { bashTouchesProtectedMemory, protectedMemoryPathAccess } from "./memory-access.ts";
+import { bashMutatesWorkspace } from "./readonly-bash.ts";
 import { renderMemoryEntries } from "./memory.ts";
 import { fetchResearchUrl, searchResearchWeb } from "./research-tools.ts";
 
@@ -150,12 +151,23 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
     }
     const roots = memoryStoreFor(ctx.cwd).roots;
     let blocked = false;
+    const readOnly = process.env.PI_WORKBENCH_READ_ONLY === "1";
+    if (readOnly && (isToolCallEventType("write", event) || isToolCallEventType("edit", event))) {
+      return {
+        block: true,
+        reason: "Read-only Workbench agents cannot write or edit project files. Report evidence and let a writer apply changes.",
+      };
+    }
+    if (isToolCallEventType("bash", event) && readOnly && bashMutatesWorkspace(event.input.command)) {
+      return {
+        block: true,
+        reason: "Read-only Workbench agents cannot mutate the workspace with bash. Use read/grep/find/ls, git status/diff/log, or tests; delegate a writer for edits.",
+      };
+    }
     if (isToolCallEventType("bash", event)) {
       blocked = bashTouchesProtectedMemory(roots, agentDir, event.input.command)
         || bashTouchesProtectedAgentStorage(event.input.command, agentDir);
-    } else if (isToolCallEventType("read", event)
-      || isToolCallEventType("write", event)
-      || isToolCallEventType("edit", event)) {
+    } else if (isToolCallEventType("write", event) || isToolCallEventType("edit", event) || isToolCallEventType("read", event)) {
       blocked = protectedMemoryPathAccess(roots, ctx.cwd, event.input.path, false)
         || projectPathBlocked(ctx.cwd, event.input.path, false);
     } else if (isToolCallEventType("grep", event) || isToolCallEventType("find", event)) {
