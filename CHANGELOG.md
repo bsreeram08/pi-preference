@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bumped pinned Earendil Pi packages (`pi-agent-core`, `pi-ai`, `pi-coding-agent`, `pi-tui`) from 0.84.2 to 0.84.4 in lockstep.
 - Council now narrates the leader's decision and which specialist tabs are opening, focuses the Supervisor tab, and synthesizes after one pass unless you ask for another.
 - Added first-party Workbench Cases: project-scoped intent/action/outcome/gap continuity records with `/cases` and `workbench_cases`, L1 recall at session start, secret rejection, and no auto-promotion into `workbench_memory`.
 - Allowed persistent `workbench_agent_start` for read-only Bash-capable specialists such as Codebase Explorer and Technical Reviewer, so interactive cmux tabs no longer fail the Bash-free public-slice gate; persistent mutation-capable agents remain deferred.
