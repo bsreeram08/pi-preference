@@ -173,6 +173,16 @@ function makeProgress(ctx: any, title: string): { update: (message: string) => v
   };
 }
 
+function announce(pi: ExtensionAPI, ctx: any, title: string, body: string): void {
+  report(pi, title, body);
+  if (ctx.hasUI) ctx.ui.setStatus("pi-workbench", `${title}: ${body.replace(/\s+/g, " ").trim().slice(0, 96)}`);
+}
+
+function formatLeaderDecision(decision: SupervisorDecision): string {
+  const roles = decision.roles.length ? decision.roles.join(", ") : "(none)";
+  return `**${decision.action}** — ${decision.phase}\n\n${decision.rationale}\n\nRoles: ${roles}${decision.question ? `\n\nQuestion: ${decision.question}` : ""}`;
+}
+
 function isVerified(output: string): boolean {
   return /<verified\s*\/>/.test(output) && !/<failed\s*\/>/.test(output);
 }
@@ -189,6 +199,7 @@ async function recordSupervisorDecision(paths: ReturnType<typeof getProjectPaths
 }
 
 async function requestSupervisorDecision(
+  pi: ExtensionAPI,
   supervisor: SupervisorClient,
   ctx: any,
   paths: ReturnType<typeof getProjectPaths>,
@@ -198,6 +209,7 @@ async function requestSupervisorDecision(
   for (let attempt = 0; attempt < 5; attempt++) {
     await recordSupervisorDecision(paths, decision);
     if (decision.action !== "ask_user") return decision;
+    announce(pi, ctx, "Council leader", formatLeaderDecision(decision));
     const answer = await ctx.ui.editor(
       `Supervisor question — ${decision.phase}`,
       decision.question ?? decision.rationale,
@@ -364,12 +376,15 @@ export default function piWorkbench(pi: ExtensionAPI) {
         const decisionsBefore = await readOptional(paths.decisions);
         const qmdResults = config.qmdEnabled ? await searchQmd(paths, exec, topic) : [];
         const qmdContext = formatQmdResults(qmdResults);
+        announce(pi, ctx, "Council leader", "Choosing specialists for this topic. Watch the Supervisor tab, or press Ctrl+Alt+A.");
         const initialDecision = await requestSupervisorDecision(
+          pi,
           supervisor,
           ctx,
           paths,
           `Start a council for this topic. Choose the smallest relevant specialist set for clarification.\n\nTOPIC:\n${topic}\n\nPROJECT KNOWLEDGE:\n${qmdContext}`,
         );
+        announce(pi, ctx, "Council leader", formatLeaderDecision(initialDecision));
         if (!canDelegateSpecialists(initialDecision)) throw new Error(`Supervisor did not authorize council delegation: ${initialDecision.action}`);
         agents = resolveSupervisorAgents(initialDecision, config.maxCouncilAgents);
         session = makeSession(root, topic, agents.map((agent) => agent.id));
@@ -378,7 +393,9 @@ export default function piWorkbench(pi: ExtensionAPI) {
         let checkpoint = "";
 
         for (let round = 1; round <= 3; round++) {
-          progress.update(`round ${round}: ${agents.length} specialists running in parallel`);
+          const roster = agents.map((agent) => agent.title).join(", ");
+          announce(pi, ctx, "Council", `Opening ${agents.length} interactive specialist tab${agents.length === 1 ? "" : "s"}: ${roster}. Chat in those tabs or press Ctrl+Alt+A.`);
+          progress.update(`round ${round}: ${roster}`);
           const results = await runAgentsParallel(
             root,
             agents,
@@ -397,35 +414,43 @@ export default function piWorkbench(pi: ExtensionAPI) {
           await saveSession(paths, session);
           report(pi, `Council Round ${round}`, roundText);
 
+          announce(pi, ctx, "Council leader", "Reading the round and deciding whether to synthesize or continue.");
           const nextDecision = await requestSupervisorDecision(
+            pi,
             supervisor,
             ctx,
             paths,
-            `Round ${round} completed. Re-plan the next council step. Choose relevant roles and explain what changed.\n\nTOPIC:\n${topic}\n\nROUND REPORT:\n${roundText}`,
+            `Round ${round} completed. Re-plan the next council step. Prefer synthesize after one useful pass unless a material gap remains.\n\nTOPIC:\n${topic}\n\nROUND REPORT:\n${roundText}`,
           );
-          if (round < 3 && nextDecision.roles.length > 0) agents = resolveSupervisorAgents(nextDecision, config.maxCouncilAgents);
+          announce(pi, ctx, "Council leader", formatLeaderDecision(nextDecision));
+          if (round < 3 && nextDecision.roles.length > 0 && nextDecision.action === "delegate") {
+            agents = resolveSupervisorAgents(nextDecision, config.maxCouncilAgents);
+          }
 
           if (round === 1) {
             const input = await ctx.ui.editor(
-              "Round 1 checkpoint",
-              nextDecision.question ?? "Add context, correct assumptions, redirect the council, or write `skip to synthesis`.",
+              "Council checkpoint",
+              nextDecision.question ?? "Leave empty to synthesize Intent.md now. Write more only if the council should run another pass.",
             );
             checkpoint = input?.trim() ?? "";
             session.rounds[0].checkpoint = checkpoint;
             await appendDecision(
               paths,
-              `## User checkpoint — ${ISO()}\n\n**Topic:** ${topic}\n\n**User input:**\n${checkpoint || "(No additional context; user continued.)"}`,
+              `## User checkpoint — ${ISO()}\n\n**Topic:** ${topic}\n\n**User input:**\n${checkpoint || "(No additional context; synthesize now.)"}`,
             );
-            if (/skip to synthesis/i.test(checkpoint)) break;
+            if (!checkpoint || /skip to synthesis/i.test(checkpoint)) break;
           }
+          if (nextDecision.action === "synthesize" || nextDecision.action === "complete") break;
         }
 
         const synthesisDecision = await requestSupervisorDecision(
+          pi,
           supervisor,
           ctx,
           paths,
           `The council has completed clarification. Decide whether the next step is synthesis and identify any unresolved user question.\n\nTRANSCRIPT:\n${transcript}`,
         );
+        announce(pi, ctx, "Council leader", "Synthesizing Intent.md from the council pass. Watch the Lead synthesis tab.");
         progress.update("lead synthesizing intent and decision record");
         const lead: AgentSpec = {
           id: "lead",
@@ -582,6 +607,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
         const qmdContext = formatQmdResults(config.qmdEnabled ? await searchQmd(paths, exec, `${session.topic} implementation`) : []);
 
         const planningDecision = await requestSupervisorDecision(
+          pi,
           supervisor,
           ctx,
           paths,
@@ -605,6 +631,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
         report(pi, "Parallel implementation briefs", plan);
 
         const workerDecision = await requestSupervisorDecision(
+          pi,
           supervisor,
           ctx,
           paths,
@@ -667,6 +694,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
         workspaceGroup = undefined;
 
         const reviewerDecision = await requestSupervisorDecision(
+          pi,
           supervisor,
           ctx,
           paths,
@@ -721,6 +749,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
           report(pi, `Independent verification — cycle ${attempt + 1}`, verification.output);
 
           const outcomeDecision = await requestSupervisorDecision(
+            pi,
             supervisor,
             ctx,
             paths,

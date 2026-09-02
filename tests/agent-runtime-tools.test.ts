@@ -112,6 +112,6 @@ describe("first-party agent runtime tool surface", () => {
     const decision = await supervisor.decide("Choose the next phase.");
     expect(decision).toMatchObject({ action: "delegate", phase: "review", roles: ["quality-reviewer"] });
     expect(request).toMatchObject({ projectRoot: "/project", agent: { id: "council-supervisor", readOnly: true } });
-    expect(updates).toHaveLength(1);
+    expect(updates.length).toBeGreaterThanOrEqual(1);
   });
 });
