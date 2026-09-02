@@ -138,7 +138,7 @@ The `workbench_agent_start`, `workbench_agent_message`, `workbench_agent_status`
 | `/workbench-update [status\|apply]` | Manually inspect or explicitly confirm a trusted built-in update |
 | `/skills-evolution-status` | Show trusted sources, cadence, audit, and community concept feed |
 | `/usage` | Show remaining coding-plan usage and reset times for the active provider |
-| `/council [idea]` | Run three council rounds, pause after Round 1, and draft/approve intent |
+| `/council [idea]` | Run a visible council pass (leader + specialist tabs), then draft/approve intent |
 | `/research [question]` | Confirm a bounded plan, run parallel research tracks, synthesize a cited report, and audit it |
 | `/research-status` | Show tracks, evidence count, audit status, providers, and artifact paths |
 | `/research-source [URL] [claim]` | Retrieve and add a manually supplied source to the evidence ledger |

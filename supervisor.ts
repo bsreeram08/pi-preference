@@ -101,6 +101,8 @@ export class SupervisorClient {
     });
     this.activeRunId = handle.runId;
     try {
+      try { this.manager.focus(handle.runId); } catch { /* Presentation focus is non-authoritative. */ }
+      this.dashboard.updateJob(handle.runId, { latestActivity: "Leader is choosing the next council step" });
       const result = await handle.completion;
       if (result.cancelled) throw new Error("Supervisor decision was cancelled.");
       if (result.exitCode !== 0 || !result.output.trim()) throw new Error(result.error || "Supervisor decision failed.");
