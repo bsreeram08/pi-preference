@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Read-only Workbench agents that receive `bash` now fail closed on ordinary workspace mutations (redirects, rm/mv/cp, git write verbs, package installs). This is a policy filter, not a sandbox.
+
 ## 0.6.0 — 2026-09-02
 
 - Bumped pinned Earendil Pi packages (`pi-agent-core`, `pi-ai`, `pi-coding-agent`, `pi-tui`) from 0.84.2 to 0.84.4 in lockstep, and fixed Ubuntu installer rollback smoke so a silent `env -i` Pi failure no longer skips link restoration.

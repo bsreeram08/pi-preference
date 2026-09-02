@@ -19,7 +19,7 @@ const CHILD_TOOLS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)),
 const CHILD_FAST_MODE_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-fast-mode.ts");
 const TRUSTED_CHILD_FILES = [
   "agent-child-bridge.ts", "agent-cmux-bridge.mjs", "agent-cmux-session.ts", "child-fast-mode.ts", "child-tools.ts",
-  "memory-access.ts", "memory-store.ts", "memory.ts", "research-tools.ts", "research-types.ts", "research-browser.mjs",
+  "memory-access.ts", "memory-store.ts", "memory.ts", "readonly-bash.ts", "research-tools.ts", "research-types.ts", "research-browser.mjs",
 ];
 const TERMINAL_STATUSES = new Set<AgentRunStatus>(["completed", "failed", "cancelled", "interrupted", "orphaned"]);
 const MAX_QUESTION_BYTES = 4_000;
@@ -205,7 +205,7 @@ function sanitizePath(value: string | undefined): string | undefined {
 export function buildAgentChildEnvironment(
   source: NodeJS.ProcessEnv,
   paths: AgentRunPaths,
-  fields: { runId: string; agentId: string; projectRoot: string; memoryProjectRoot: string; toolBudget?: number; allowParentQuestions: boolean; expectedModel?: string; expectedThinking?: string },
+  fields: { runId: string; agentId: string; projectRoot: string; memoryProjectRoot: string; toolBudget?: number; allowParentQuestions: boolean; expectedModel?: string; expectedThinking?: string; readOnly?: boolean },
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     HOME: paths.temporaryHome,
@@ -222,6 +222,7 @@ export function buildAgentChildEnvironment(
     PI_WORKBENCH_ALLOW_PARENT_QUESTION: fields.allowParentQuestions ? "1" : "0",
     PI_WORKBENCH_EXPECTED_MODEL: fields.expectedModel ?? "",
     PI_WORKBENCH_EXPECTED_THINKING: fields.expectedThinking ?? "",
+    PI_WORKBENCH_READ_ONLY: fields.readOnly === true ? "1" : "0",
   };
   const term = source.TERM;
   if (term && /^[a-zA-Z0-9_.+-]{1,64}$/.test(term)) environment.TERM = term;
@@ -428,6 +429,7 @@ export class AgentRunManager {
       allowParentQuestions: request.runContext?.allowParentQuestions === true,
       expectedModel: model.identity,
       expectedThinking: model.thinking,
+      readOnly: request.agent.readOnly,
     });
     const runtime = await runtimeIdentity(piInvocation, childEnvironment);
     let launch: { invocation: { command: string; args: readonly string[] }; environment: NodeJS.ProcessEnv };

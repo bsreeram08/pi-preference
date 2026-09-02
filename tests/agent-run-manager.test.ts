@@ -484,11 +484,12 @@ describe("buildAgentChildEnvironment", () => {
     const environment = buildAgentChildEnvironment(
       { PATH: "/usr/bin", NODE_OPTIONS: "evil", OPENAI_API_KEY: "secret", PI_CODING_AGENT_DIR: "/safe/agent" },
       { root: "/run", record: "/run/record", systemPrompt: "/run/prompt", sessions: "/run/sessions", temporaryHome: "/run/home", temporaryDirectory: "/run/tmp" },
-      { runId: "run", agentId: "agent", projectRoot: "/worktree", memoryProjectRoot: "/project", allowParentQuestions: false },
+      { runId: "run", agentId: "agent", projectRoot: "/worktree", memoryProjectRoot: "/project", allowParentQuestions: false, readOnly: true },
     );
     expect(environment).toMatchObject({
       PATH: "/usr/bin", HOME: "/run/home", TMPDIR: "/run/tmp", PI_OFFLINE: "1",
       PI_WORKBENCH_PROJECT_ROOT: "/worktree", PI_WORKBENCH_MEMORY_PROJECT_ROOT: "/project",
+      PI_WORKBENCH_READ_ONLY: "1",
     });
     expect(environment.NODE_OPTIONS).toBeUndefined();
     expect(environment.OPENAI_API_KEY).toBeUndefined();
