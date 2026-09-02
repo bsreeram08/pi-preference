@@ -6,8 +6,6 @@ import {
   BALANCED_ROUTES,
   BALANCED_ROUTING_STATE,
   GROK_BALANCED_ROUTES,
-  formatRoutingReceipt,
-  nativeSubagentFallback,
   normalizeRoutingFamily,
   normalizeRoutingPolicy,
   parseFixedRoutingModel,
@@ -240,7 +238,7 @@ function nativeRoutingGuidance(state: ModelRoutingState): string {
   const familyNote = family === "grok"
     ? " Grok 4.6 family is active for delegated children. `/model-routing grok` is session-only; `/model-routing grok --default` writes the durable project family. Main Pi keeps its current model unless launched with --model."
     : " Codex family is the shipped default. `/model-routing grok` switches children for this session; `/model-routing grok --default` persists Grok 4.6 for new sessions.";
-  return `Adaptive delegation routing: prefer first-party delegate_task for ordinary specialist work and workbench_agent_start when a persistent read-only agent must remain steerable or may ask the parent a question. Classify each lane independently from complexity, uncertainty, risk, breadth, and verification cost; role is only a prior. Balanced routes are light=${routes.light.model}, standard=${routes.standard.model}, heavy=${routes.heavy.model}. A hard scout/recon lane can and should reach Sol or Grok 4.6 high; never use Spark for image/visual work. Before launch, show one compact line with role, model/thinking, reason, and read-only budget. Read-only limits are 8 turns/30 tools (light), 16/60 (standard), or 30/120 (heavy), with stop-and-synthesize guidance. Persistent mutation-capable agents are not enabled; use the existing single-writer delegate_task path under its lease. The external subagent tool is a temporary compatibility surface during migration and should not be chosen for new Workbench flows.${familyNote}${fixed}`;
+  return `Adaptive delegation routing: prefer first-party delegate_task for ordinary specialist work and workbench_agent_start when a persistent read-only agent must remain steerable or may ask the parent a question. Classify each lane independently from complexity, uncertainty, risk, breadth, and verification cost; role is only a prior. Balanced routes are light=${routes.light.model}, standard=${routes.standard.model}, heavy=${routes.heavy.model}. A hard scout/recon lane can and should reach Sol or Grok 4.6 high; never use Spark for image/visual work. Before launch, show one compact line with role, model/thinking, reason, and read-only budget. Read-only limits are 8 turns/30 tools (light), 16/60 (standard), or 30/120 (heavy), with stop-and-synthesize guidance. Persistent mutation-capable agents are not enabled; use the existing single-writer delegate_task path under its lease. Do not use the external subagent tool or workflowScript; first-party Workbench agents are the runtime.${familyNote}${fixed}`;
 }
 
 export function registerModelRouting(
@@ -402,11 +400,8 @@ export function registerModelRouting(
   }));
 
   pi.on("tool_call", (event) => {
-    if (event.toolName !== "subagent" || event.input.action !== undefined) return;
-    const fallback = nativeSubagentFallback(event.input, state);
-    for (const [key, value] of Object.entries(fallback.input)) event.input[key] = value;
-    const role = typeof event.input.agent === "string" ? event.input.agent : "workflow";
-    appendReceipt(formatRoutingReceipt(role, fallback.route));
+    if (event.toolName !== "subagent") return;
+    appendReceipt("Deprecated: use first-party `delegate_task` or `workbench_agent_start` instead of the external subagent tool. Workbench no longer rewrites subagent calls.");
   });
 
   return {

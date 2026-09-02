@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added first-party `workbench_todo`, `workbench_ask`, and `workbench_goal` (`/todos`, `/goals`, `/goals-set`, `/goals-clear`) so session lists, structured questions, and user-owned goals no longer need third-party packages.
+- Stopped rewriting external `subagent` tool calls; routing now tells children to use `delegate_task` and `workbench_agent_start` instead.
+
 ## 0.6.0 — 2026-09-02
 
 - Bumped pinned Earendil Pi packages (`pi-agent-core`, `pi-ai`, `pi-coding-agent`, `pi-tui`) from 0.84.2 to 0.84.4 in lockstep, and fixed Ubuntu installer rollback smoke so a silent `env -i` Pi failure no longer skips link restoration.

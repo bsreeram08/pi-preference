@@ -214,6 +214,13 @@ describe("session routing controls", () => {
     expect(entries.filter((entry) => entry.customType === MODEL_ROUTING_RECEIPT_ENTRY)).toHaveLength(1);
     expect(parentModelSets).toBe(0);
     expect(parentThinkingSets).toBe(0);
+
+    const input: Record<string, unknown> = { agent: "scout", task: "Inspect the API." };
+    handlers.get("tool_call")?.[0]?.({ toolName: "subagent", input }, ctx);
+    expect(input.model).toBeUndefined();
+    expect(entries.filter((entry) => entry.customType === MODEL_ROUTING_RECEIPT_ENTRY).at(-1)).toMatchObject({
+      data: { content: expect.stringContaining("delegate_task") },
+    });
   });
 });
 
