@@ -172,7 +172,22 @@ describe("public installer configuration safety", () => {
       if (result.status !== 0) throw new Error(`Missing test executable: ${name}`);
       return result.stdout.trim();
     };
-    await fs.symlink(process.execPath, path.join(binDir, "node"));
+    const locateNode = async () => {
+      for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+        if (!dir) continue;
+        const candidate = path.join(dir, "node");
+        try {
+          const stat = await fs.lstat(candidate);
+          if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+          const real = await fs.realpath(candidate);
+          if (!/bun/i.test(path.basename(real))) return candidate;
+        } catch {
+          // Missing PATH entry.
+        }
+      }
+      return process.execPath;
+    };
+    await fs.symlink(await locateNode(), path.join(binDir, "node"));
     await fs.symlink(locate("python3"), path.join(binDir, "python3"));
     await fs.symlink(locate("pi"), path.join(binDir, "pi"));
     await fs.writeFile(path.join(extensionsDir, "pi-workbench"), "original-extension\n");
