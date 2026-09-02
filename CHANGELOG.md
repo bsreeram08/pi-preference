@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Durable `/model-routing --default` now writes the project git root config instead of a nested cwd, and natural-language session directives keep the other routing axis (family vs policy) instead of resetting it.
+
 ## 0.6.0 — 2026-09-02
 
 - Bumped pinned Earendil Pi packages (`pi-agent-core`, `pi-ai`, `pi-coding-agent`, `pi-tui`) from 0.84.2 to 0.84.4 in lockstep, and fixed Ubuntu installer rollback smoke so a silent `env -i` Pi failure no longer skips link restoration.
