@@ -29,7 +29,7 @@ A preference-aware [Pi](https://github.com/earendil-works/pi) capability workben
 - macOS, Linux, or WSL with Bash
 - Git and Python 3
 - Node.js 22.19 or newer
-- Pi coding agent 0.84.2 or a compatible newer release
+- Pi coding agent 0.84.4 or a compatible newer release
 - Bun 1.3.14 and TypeScript 5.9.3 only for development or `--strict` installation validation
 
 The supported distribution is a recursive Git clone because RePrompter is a pinned submodule. The installer does not fetch a missing submodule: it fails before mutation and prints the explicit recovery command. The root package remains `private: true` to prevent accidental npm publication.

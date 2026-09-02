@@ -18,7 +18,7 @@ Requirements:
 - Node.js 22.19 or newer
 - Bun 1.3.14
 - Python 3
-- Pi coding agent 0.84.2 for installer and RPC integration checks
+- Pi coding agent 0.84.4 for installer and RPC integration checks
 
 Clone recursively and install the pinned development dependencies:
 

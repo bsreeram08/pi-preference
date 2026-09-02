@@ -147,9 +147,17 @@ CHILD_SMOKE_ERR="$(mktemp)"
 CHILD_SMOKE_MARKER="$(mktemp)"
 TEMP_FILES+=("$SMOKE_OUT" "$SMOKE_ERR" "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR" "$CHILD_SMOKE_MARKER")
 
+set +e
 printf '%s\n' '{"type":"get_commands","id":"commands"}' \
   | "${CLEAN_ENV[@]}" PI_OFFLINE=1 "$PI_BIN" --mode rpc --no-session --no-extensions --extension "$ROOT/index.ts" \
     >"$SMOKE_OUT" 2>"$SMOKE_ERR"
+SMOKE_STATUS=$?
+set -e
+if ((SMOKE_STATUS != 0)); then
+  cat "$SMOKE_ERR" >&2 || true
+  printf 'error: Pi Workbench extension smoke process failed\n' >&2
+  exit 1
+fi
 if grep -q 'extension_error' "$SMOKE_OUT" "$SMOKE_ERR"; then
   cat "$SMOKE_ERR" >&2
   printf 'error: Pi Workbench extension smoke test failed\n' >&2
@@ -182,11 +190,19 @@ if missing or unexpected:
     raise SystemExit(f"error: invalid Workbench command set; missing={missing}, unexpected={unexpected}")
 PY
 
+set +e
 printf '%s\n' '{"type":"get_state","id":"state"}' \
   | "${CLEAN_ENV[@]}" PI_OFFLINE=1 PI_WORKBENCH_AGENT=installer-smoke PI_WORKBENCH_PROJECT_ROOT="$ROOT" \
     PI_WORKBENCH_CHILD_SMOKE_FILE="$CHILD_SMOKE_MARKER" "$PI_BIN" --mode rpc --no-session --no-extensions \
       --extension "$ROOT/child-tools.ts" --tools workbench_memory,qmd_search \
       >"$CHILD_SMOKE_OUT" 2>"$CHILD_SMOKE_ERR"
+CHILD_SMOKE_STATUS=$?
+set -e
+if ((CHILD_SMOKE_STATUS != 0)); then
+  cat "$CHILD_SMOKE_ERR" >&2 || true
+  printf 'error: Pi Workbench child memory/tool smoke process failed\n' >&2
+  exit 1
+fi
 if grep -q 'extension_error' "$CHILD_SMOKE_OUT" "$CHILD_SMOKE_ERR"; then
   cat "$CHILD_SMOKE_ERR" >&2
   printf 'error: Pi Workbench child memory/tool smoke test failed\n' >&2
