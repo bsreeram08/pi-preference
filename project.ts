@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -21,6 +22,21 @@ export class CouncilAuthoritySnapshotMismatchError extends Error {
 
 function projectId(root: string): string {
   return createHash("sha1").update(root).digest("hex").slice(0, 10);
+}
+
+export function findProjectRootSync(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  try {
+    const result = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: resolved,
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
+  } catch {
+    // A non-git directory is still a valid project for council planning.
+  }
+  return resolved;
 }
 
 export async function findProjectRoot(cwd: string, exec: Exec): Promise<string> {
