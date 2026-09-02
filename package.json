@@ -1,6 +1,6 @@
 {
   "name": "pi-workbench",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Sreeram's preference-aware Pi workbench for planning, research, delegated implementation, verification, durable agent memory, and trusted skill evolution.",
   "private": true,
   "type": "module",
