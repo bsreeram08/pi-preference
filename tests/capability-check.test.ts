@@ -221,10 +221,13 @@ describe("validate-only capability inventory", () => {
         await fs.writeFile(path.join(directory, "package.json"), `${JSON.stringify({ name, version: "1.0.0" })}\n`);
       }
       await fs.writeFile(path.join(root, "npm", "package.json"), `${JSON.stringify(npm)}\n`);
+      const leftover = path.join(root, "npm", "node_modules", "pi-subagents");
+      await fs.mkdir(leftover, { recursive: true });
+      await fs.writeFile(path.join(leftover, "package.json"), `${JSON.stringify({ name: "pi-subagents", version: "0.63.0" })}\n`);
       const result = await run(root);
       const parsed = JSON.parse(result.stdout);
       expect(result.code).toBe(1);
-      expect(parsed.findings.filter((item: { code: string }) => item.code === "forbidden-package-installed")).toHaveLength(2);
+      expect(parsed.findings.filter((item: { code: string }) => item.code === "forbidden-package-installed")).toHaveLength(3);
     } finally { await fs.rm(root, { recursive: true, force: true }); }
   });
 
@@ -259,6 +262,13 @@ describe("validate-only capability inventory", () => {
     });
     expect(manifest.inventory.themeLinks).toEqual({ "ember.json": "extensions/pi-workbench/setup/themes/ember.json" });
     expect(new Set(manifest.inventory.packages).size).toBe(manifest.inventory.packages.length);
-    expect(manifest.runtimeExclusions.packages).toEqual(["npm:pi-autoresearch", "npm:@dietrichgebert/ponytail"]);
+    expect(manifest.runtimeExclusions.packages).toEqual([
+      "npm:pi-autoresearch",
+      "npm:@dietrichgebert/ponytail",
+      "npm:@capyup/pi-goal",
+      "npm:@juicesharp/rpiv-ask-user-question",
+      "npm:@juicesharp/rpiv-todo",
+      "npm:pi-subagents",
+    ]);
   });
 });

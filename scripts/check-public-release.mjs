@@ -95,7 +95,7 @@ const approvedCapabilities = {
     themes: ["ember.json"],
     themeLinks: { "ember.json": "extensions/pi-workbench/setup/themes/ember.json" },
   },
-  runtimeExclusions: { packages: ["npm:pi-autoresearch", "npm:@dietrichgebert/ponytail"] },
+  runtimeExclusions: { packages: ["npm:pi-autoresearch", "npm:@dietrichgebert/ponytail", "npm:@capyup/pi-goal", "npm:@juicesharp/rpiv-ask-user-question", "npm:@juicesharp/rpiv-todo", "npm:pi-subagents"] },
 };
 if (JSON.stringify(capabilities) !== JSON.stringify(approvedCapabilities)) {
   fail("capability manifest must contain only the approved ordered inventory and runtime exclusions");

@@ -64,7 +64,11 @@
   "runtimeExclusions": {
     "packages": [
       "npm:pi-autoresearch",
-      "npm:@dietrichgebert/ponytail"
+      "npm:@dietrichgebert/ponytail",
+      "npm:@capyup/pi-goal",
+      "npm:@juicesharp/rpiv-ask-user-question",
+      "npm:@juicesharp/rpiv-todo",
+      "npm:pi-subagents"
     ]
   }
 }

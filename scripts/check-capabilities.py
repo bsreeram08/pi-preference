@@ -31,7 +31,14 @@ EXPECTED_EXTENSION_LINKS = {
 }
 EXPECTED_THEMES = ["ember.json"]
 EXPECTED_THEME_LINKS = {"ember.json": "extensions/pi-workbench/setup/themes/ember.json"}
-EXPECTED_EXCLUSIONS = ["npm:pi-autoresearch", "npm:@dietrichgebert/ponytail"]
+EXPECTED_EXCLUSIONS = [
+    "npm:pi-autoresearch",
+    "npm:@dietrichgebert/ponytail",
+    "npm:@capyup/pi-goal",
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:@juicesharp/rpiv-todo",
+    "npm:pi-subagents",
+]
 PACKAGE_NAME = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
 CANONICAL_VERSION = re.compile(r"^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
