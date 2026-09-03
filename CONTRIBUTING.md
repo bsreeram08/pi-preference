@@ -51,7 +51,7 @@ Changes to memory, child tools, installation, process execution, or trust bounda
 
 - Keep each pull request focused and explain the user-visible outcome.
 - Include observable test evidence.
-- Update `README.md`, `SECURITY.md`, or `docs/` when behavior or trust boundaries change.
+- Update `README.md` when the product surface changes (commands, first-party tools, install). Keep the README a map; put trust internals in `SECURITY.md` and architecture in `docs/`.
 - Preserve the single-writer rule: parallel delegated agents must be read-only.
 - Do not commit generated Pi state, sessions, memory, research artifacts, credentials, or local backups.
 - Review AI-generated code and documentation as carefully as human-written changes.

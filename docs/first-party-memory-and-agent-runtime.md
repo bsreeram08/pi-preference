@@ -1,7 +1,8 @@
 # First-party memory and interactive-agent roadmap
 
-> Status: architecture exploration plus the first Agent Runtime, interactive cmux Pi TUI sessions, and a first Cases continuity slice (intent → action → outcome → gap). No external reference package was installed or executed. Richer Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
-> Reference snapshots: `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, and its cited upstream cmux adapter at `HazAT/pi-interactive-subagents@c100577ebf73`.
+> Status: Agent Runtime, interactive cmux Pi TUI sessions, Cases, and first-party todo/ask/goal are on `main`. `pi-subagents`, `pi-goal`, `rpiv-todo`, and `rpiv-ask-user-question` are replaced. Session Observations, persistent mutation agents, and the remaining companion packages are later slices.
+> Product map: [`README.md`](../README.md). Trust boundaries: [`SECURITY.md`](../SECURITY.md). Memory lifecycle: [`memory.md`](memory.md).
+> Reference snapshots (untrusted, not installed): `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, upstream cmux adapter `HazAT/pi-interactive-subagents@c100577ebf73`.
 
 ## Decision
 
@@ -307,9 +308,8 @@ Use `Ctrl+Alt+A` as the dashboard focus toggle; `Escape` returns to the editor. 
 
 The external package is not imported directly by Workbench. Current coupling is narrow:
 
-- `model-routing.ts` injects `pi-subagents` guidance and mutates external `subagent` tool calls.
-- `cmux-workbench.ts` listens for `subagent:*` and `pi-intercom:*` events.
-- user prompts/skills may reference `subagent`, `runs.run`, and `workflowScript`.
+- `cmux-workbench.ts` still listens for leftover `subagent:*` and `pi-intercom:*` events.
+- user prompts/skills may still mention `subagent`, `runs.run`, and `workflowScript`.
 
 Migration:
 
@@ -319,14 +319,14 @@ Migration:
 4. Change cmux events to first-party versioned runtime events.
 5. Provide a temporary read-only compatibility facade and diagnostics.
 6. Migrate prompts, agents, skills, and tests.
-7. Remove `npm:pi-subagents` from Pi settings.
-8. Remove compatibility listeners and guidance after a soak period.
+7. Remove `npm:pi-subagents` from Pi settings and the capability inventory.
+8. Remove leftover cmux `subagent:*` listeners after a soak period.
 
 No mutation workflow should be shadow-run during migration.
 
 ## Wider third-party reduction
 
-The active Pi settings currently load nine npm packages plus one git package. The npm lock contains 154 package records. `context-mode` and `better-sqlite3` are marked as install-script packages; `context-mode` itself declares a postinstall script. Integrity hashes improve reproducibility but do not make package scripts trustworthy. Current direct dependency ranges use `^`, so they are not immutably pinned in settings.
+The active Pi settings currently load five remaining npm packages plus one git package after removing `pi-subagents`, `pi-goal`, `rpiv-todo`, and `rpiv-ask-user-question`. The npm lock contains 154 package records. `context-mode` and `better-sqlite3` are marked as install-script packages; `context-mode` itself declares a postinstall script. Integrity hashes improve reproducibility but do not make package scripts trustworthy. Current direct dependency ranges use `^`, so they are not immutably pinned in settings.
 
 Risk-ordered replacement plan:
 
@@ -344,8 +344,8 @@ Replace first because they launch processes, manage sessions, or expose broad to
 
 1. `pi-subagents` -> Workbench Agent Runtime.
 2. `pi-background-tasks` -> the same runtime's background command and agent job manager.
-3. `@capyup/pi-goal` -> first-party `workbench_goal` and `/goals-set` (user-owned intent; no mythological modes). Uninstall the npm package after reload.
-4. `@juicesharp/rpiv-ask-user-question` and `@juicesharp/rpiv-todo` -> first-party `workbench_ask` and `workbench_todo`. Uninstall the npm packages after reload.
+3. `@capyup/pi-goal` -> first-party `workbench_goal` and `/goals-set` (user-owned intent; no mythological modes). Removed from the capability inventory.
+4. `@juicesharp/rpiv-ask-user-question` and `@juicesharp/rpiv-todo` -> first-party `workbench_ask` and `workbench_todo`. Removed from the capability inventory.
 
 ### Phase C — provider and specialist packages
 

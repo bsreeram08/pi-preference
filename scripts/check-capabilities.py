@@ -17,14 +17,10 @@ MANIFEST = ROOT / "setup" / "capabilities.v1.json"
 MAX_JSON_BYTES = 1024 * 1024
 EXPECTED_PACKAGE_POLICIES = [
     ("@imsus/pi-extension-minimax-coding-plan-mcp", "^1.0.2", "1.0.2", "sha512-71T4A16Eiv9lp8o8Qfn1F63strEVRi9IGtMTwtDrje34yR+VtxYVUwRB+PmBg49rIWf22I5yWxk5LhIDuhF/zw=="),
-    ("@capyup/pi-goal", "^0.6.0", "0.6.0", "sha512-Ohn5YjnYi2CcQuxyRAAXIZPQuKQMt+ED5GGBUX28W7YH9L6WXw+7rh35dFF+Z6CSL1fYnVSZ4S08ezZS7wSBRA=="),
     ("pi-lmstudio", "^1.5.0", "1.5.0", "sha512-Bnl9c4pmm1BrjUVI7DSPPH78H/md3XqLAx87hjMDzDnntTS5btryrXB3wLPPqgD93EsUzbfm7E9jlwmh8ChPIA=="),
-    ("pi-subagents", "^0.52.1", "0.52.1", "sha512-9K9tICAbDBJ82op5wvFAIZFhg7K5Cv6du5hEsnf4o6/qhoslla1WcV11cOyB4tzKAHUIXA2GLA6kfxxLXzIpyg=="),
     ("@vigolium/piolium", "^0.0.13", "0.0.13", "sha512-FrrGJR/XnAwUVdNsnAXEPS6mpHoUBS3nt8s5SKHOKM8P/8DOynYw+EGgEfbXPcaLHNjMnXChUMAlKN8G6ma8SA=="),
     ("context-mode", "^1.0.169", "1.0.169", "sha512-94JIaFuLjF9SO2BsGTrbGtyT44K95+9OC8BdbaL/UT76xOkanJLfUR5CzmNw+GELXZQqH4nBrKg9wjBnSFkVnQ=="),
     ("pi-background-tasks", "^2.4.2", "2.4.2", "sha512-KDH2yv5yKnc2slUNMSsysVZleriuv8tbhe5L+AeplVAfijQsECN5YAWOz5TDbStCXLdJC15GaUQ1P87BXGk5Hg=="),
-    ("@juicesharp/rpiv-ask-user-question", "^2.6.2", "2.6.2", "sha512-DS9yZHcaPr+/nf0x2CCfiXBod/1aWjGyakGM3lZAObuGDhYI0nFRE5gxTcCOfQug6JtJXjt1GlzyX8Pljefdzg=="),
-    ("@juicesharp/rpiv-todo", "^2.6.2", "2.6.2", "sha512-Lt2HzNaKWgOl7/nEJrxtRsKoIQJTZd32BeckDxJ0JGvoUmwYvqOicSpXbgKVZwyGqGBw90WBKYWkEggo9U/Q4Q=="),
 ]
 EXPECTED_PACKAGES = [f"npm:{name}" for name, _, _, _ in EXPECTED_PACKAGE_POLICIES]
 EXPECTED_EXTENSIONS = ["cmux-session.ts", "cmux-workbench.ts", "pi-look", "pi-workbench", "startup-header.ts"]
@@ -35,7 +31,14 @@ EXPECTED_EXTENSION_LINKS = {
 }
 EXPECTED_THEMES = ["ember.json"]
 EXPECTED_THEME_LINKS = {"ember.json": "extensions/pi-workbench/setup/themes/ember.json"}
-EXPECTED_EXCLUSIONS = ["npm:pi-autoresearch", "npm:@dietrichgebert/ponytail"]
+EXPECTED_EXCLUSIONS = [
+    "npm:pi-autoresearch",
+    "npm:@dietrichgebert/ponytail",
+    "npm:@capyup/pi-goal",
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:@juicesharp/rpiv-todo",
+    "npm:pi-subagents",
+]
 PACKAGE_NAME = re.compile(r"^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$")
 CANONICAL_VERSION = re.compile(r"^[~^]?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 
