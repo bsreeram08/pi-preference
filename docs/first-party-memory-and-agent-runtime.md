@@ -1,7 +1,8 @@
 # First-party memory and interactive-agent roadmap
 
-> Status: architecture exploration plus the first Agent Runtime, interactive cmux Pi TUI sessions, and a first Cases continuity slice (intent → action → outcome → gap). No external reference package was installed or executed. Richer Session Observations, persistent mutation agents, and final third-party package removal remain future slices.
-> Reference snapshots: `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, and its cited upstream cmux adapter at `HazAT/pi-interactive-subagents@c100577ebf73`.
+> Status: Agent Runtime, interactive cmux Pi TUI sessions, Cases, and first-party todo/ask/goal are on `main`. `pi-subagents`, `pi-goal`, `rpiv-todo`, and `rpiv-ask-user-question` are replaced. Session Observations, persistent mutation agents, and the remaining companion packages are later slices.
+> Product map: [`README.md`](../README.md). Trust boundaries: [`SECURITY.md`](../SECURITY.md). Memory lifecycle: [`memory.md`](memory.md).
+> Reference snapshots (untrusted, not installed): `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, upstream cmux adapter `HazAT/pi-interactive-subagents@c100577ebf73`.
 
 ## Decision
 
