@@ -270,7 +270,7 @@ Prefer one tool namespace:
 - `workbench_agent_cancel`
 - `workbench_agent_focus`
 
-A compatibility `subagent` facade may exist temporarily but must call the same manager and emit deprecation diagnostics. Remove it after migrated sessions and prompts no longer reference it.
+Workbench no longer rewrites external `subagent` tool calls. Prefer `delegate_task` and `workbench_agent_*`. A leftover `subagent` package may still load from user settings until it is uninstalled; those calls receive a deprecation receipt only.
 
 ### Aggregate completion
 
@@ -344,8 +344,8 @@ Replace first because they launch processes, manage sessions, or expose broad to
 
 1. `pi-subagents` -> Workbench Agent Runtime.
 2. `pi-background-tasks` -> the same runtime's background command and agent job manager.
-3. `@capyup/pi-goal` -> a small first-party goal state machine using custom session entries.
-4. `@juicesharp/rpiv-ask-user-question` and `@juicesharp/rpiv-todo` -> first-party UI/state tools using `ctx.ui` and custom entries.
+3. `@capyup/pi-goal` -> first-party `workbench_goal` and `/goals-set` (user-owned intent; no mythological modes). Uninstall the npm package after reload.
+4. `@juicesharp/rpiv-ask-user-question` and `@juicesharp/rpiv-todo` -> first-party `workbench_ask` and `workbench_todo`. Uninstall the npm packages after reload.
 
 ### Phase C — provider and specialist packages
 
