@@ -13,7 +13,9 @@ import {
   routingFamily,
   type ModelRoutingState,
   type RoutingFamily,
+  type SessionRoutingDirective,
 } from "./routing.ts";
+import { findProjectRootSync } from "./project.ts";
 
 export const MODEL_ROUTING_ENTRY = "pi-workbench-model-routing";
 export const MODEL_ROUTING_RECEIPT_ENTRY = "pi-workbench-model-routing-receipt";
@@ -139,47 +141,39 @@ function projectConfigPath(root: string): string {
   return path.join(root, ".pi", "pi-workbench", "config.json");
 }
 
-function walkProjectConfig(cwd: string): string | undefined {
-  let current = path.resolve(cwd);
-  for (;;) {
-    const configPath = projectConfigPath(current);
-    try {
-      fs.accessSync(configPath);
-      return configPath;
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) return undefined;
-      current = parent;
-    }
-  }
+export function mergeSessionRoutingDirective(
+  current: ModelRoutingState,
+  durable: DurableRoutingDefaults,
+  directive: SessionRoutingDirective,
+): ModelRoutingState {
+  if (directive.kind === "fixed") return { policy: "fixed", fixed: directive.fixed };
+  const policy = current.policy === "economy" || current.policy === "quality" || current.policy === "balanced"
+    ? current.policy
+    : durable.policy;
+  const family = routingFamily(current);
+  if (directive.kind === "family") return durableState({ policy, family: directive.family });
+  return durableState({ policy: directive.policy, family });
 }
 
 export function readDurableRouting(cwd: string): DurableRoutingDefaults {
-  let current = path.resolve(cwd);
-  for (;;) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(projectConfigPath(current), "utf8")) as {
-        modelRoutingPolicy?: unknown;
-        modelRoutingFamily?: unknown;
-      };
-      return {
-        policy: normalizeRoutingPolicy(parsed.modelRoutingPolicy),
-        family: normalizeRoutingFamily(parsed.modelRoutingFamily),
-      };
-    } catch {
-      // Walk toward the project root; a missing or malformed routing field fails to balanced Codex.
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return { policy: "balanced", family: "codex" };
-    current = parent;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(projectConfigPath(findProjectRootSync(cwd)), "utf8")) as {
+      modelRoutingPolicy?: unknown;
+      modelRoutingFamily?: unknown;
+    };
+    return {
+      policy: normalizeRoutingPolicy(parsed.modelRoutingPolicy),
+      family: normalizeRoutingFamily(parsed.modelRoutingFamily),
+    };
+  } catch {
+    return { policy: "balanced", family: "codex" };
   }
 }
 
 export function writeDurableRouting(cwd: string, patch: Partial<DurableRoutingDefaults>): string {
-  const existing = walkProjectConfig(cwd);
-  const configPath = existing ?? projectConfigPath(path.resolve(cwd));
+  const configPath = projectConfigPath(findProjectRootSync(cwd));
   let current: Record<string, unknown> = {};
-  if (existing) {
+  if (fs.existsSync(configPath)) {
     const parsed = JSON.parse(fs.readFileSync(configPath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Workbench routing config is malformed.");
     current = parsed as Record<string, unknown>;
@@ -386,11 +380,12 @@ export function registerModelRouting(
   pi.on("input", async (event, ctx) => {
     const directive = parseSessionRoutingDirective(event.text);
     if (!directive) return { action: "continue" as const };
-    if (!fixedRouteIsAvailable(ctx, directive)) {
+    const next = mergeSessionRoutingDirective(state, durableDefaults, directive);
+    if (!fixedRouteIsAvailable(ctx, next)) {
       if (ctx.hasUI) ctx.ui.notify("That fixed route is not available in this Pi installation.", "warning");
       return { action: "handled" as const };
     }
-    applyState(ctx, directive, true);
+    applyState(ctx, next, true);
     appendReceipt(stateDescription(state));
     return { action: "handled" as const };
   });

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { normalizeConfig } from "../config.ts";
@@ -124,24 +125,24 @@ describe("adaptive model routing", () => {
 describe("session routing controls", () => {
   test("parses exact natural-language session directives", () => {
     expect(parseSessionRoutingDirective("use sol for everything this session")).toEqual({
-      policy: "fixed",
+      kind: "fixed",
       fixed: BALANCED_ROUTES.heavy,
     });
     expect(parseSessionRoutingDirective("please use sol for everything")).toEqual({
-      policy: "fixed",
+      kind: "fixed",
       fixed: BALANCED_ROUTES.heavy,
     });
     expect(parseSessionRoutingDirective("use luna for everything")).toEqual({
-      policy: "fixed",
+      kind: "fixed",
       fixed: { model: "openai-codex/gpt-5.6-luna:low", thinking: "low" },
     });
-    expect(parseSessionRoutingDirective("Use economy routing this session.")).toEqual({ policy: "economy" });
+    expect(parseSessionRoutingDirective("Use economy routing this session.")).toEqual({ kind: "policy", policy: "economy" });
     expect(parseSessionRoutingDirective("use grok for everything this session")).toEqual({
-      policy: "fixed",
+      kind: "fixed",
       fixed: GROK_PRIMARY_ROUTE,
     });
-    expect(parseSessionRoutingDirective("use grok routing this session")).toEqual({ policy: "balanced", family: "grok" });
-    expect(parseSessionRoutingDirective("use codex routing this session")).toEqual({ policy: "balanced" });
+    expect(parseSessionRoutingDirective("use grok routing this session")).toEqual({ kind: "family", family: "grok" });
+    expect(parseSessionRoutingDirective("use codex routing this session")).toEqual({ kind: "family", family: "codex" });
     expect(parseSessionRoutingDirective("use sol for everything and inspect this file")).toBeUndefined();
   });
 
@@ -349,6 +350,70 @@ describe("durable family defaults and customize menu", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  test("writes --default config at the git project root from a nested cwd", async () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-workbench-routing-git-"));
+    const nested = join(root, "packages", "app");
+    mkdirSync(nested, { recursive: true });
+    const git = spawnSync("git", ["init"], { cwd: root, encoding: "utf8" });
+    expect(git.status).toBe(0);
+    const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+    const pi = {
+      registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+        commands.set(name, command.handler);
+      },
+      on() {},
+      appendEntry() {},
+      registerEntryRenderer() {},
+    } as any;
+    registerModelRouting(pi);
+    const ctx = {
+      cwd: nested,
+      hasUI: false,
+      ui: { setStatus() {}, notify() {} },
+      sessionManager: { getBranch: () => [] },
+      modelRegistry: { find: () => undefined },
+    };
+    try {
+      await commands.get("model-routing")?.("grok --default", ctx);
+      expect(readDurableRouting(nested)).toEqual({ policy: "balanced", family: "grok" });
+      expect(readFileSync(join(root, ".pi", "pi-workbench", "config.json"), "utf8")).toContain('"modelRoutingFamily": "grok"');
+      expect(existsSync(join(nested, ".pi"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("natural-language routing keeps the other axis of the current session state", async () => {
+    const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+    const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
+    const pi = {
+      registerCommand(name: string, command: { handler: (args: string, ctx: any) => Promise<void> }) {
+        commands.set(name, command.handler);
+      },
+      on(name: string, handler: (event: any, ctx: any) => unknown) {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      appendEntry() {},
+      registerEntryRenderer() {},
+    } as any;
+    const controller = registerModelRouting(pi);
+    const ctx = {
+      cwd: process.cwd(),
+      hasUI: false,
+      ui: { setStatus() {}, notify() {} },
+      sessionManager: { getBranch: () => [] },
+      modelRegistry: { find: () => undefined },
+    };
+    await handlers.get("session_start")?.[0]?.({}, ctx);
+    await commands.get("model-routing")?.("quality", ctx);
+    await handlers.get("input")?.[0]?.({ text: "use grok routing this session" }, ctx);
+    expect(controller.getState()).toEqual({ policy: "quality", family: "grok" });
+    await handlers.get("input")?.[0]?.({ text: "use economy routing this session" }, ctx);
+    expect(controller.getState()).toEqual({ policy: "economy", family: "grok" });
+    await handlers.get("input")?.[0]?.({ text: "use codex routing this session" }, ctx);
+    expect(controller.getState()).toEqual({ policy: "economy" });
   });
 
   test("interactive menu can save Grok 4.6 as the project default", async () => {

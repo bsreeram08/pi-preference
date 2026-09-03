@@ -322,12 +322,17 @@ export function resolveRoutingModelAlias(value: string): FixedModelRoute | undef
   return ROUTING_MODEL_ALIASES[value.trim().toLowerCase()];
 }
 
-export function parseSessionRoutingDirective(text: string): ModelRoutingState | undefined {
+export type SessionRoutingDirective =
+  | { kind: "fixed"; fixed: FixedModelRoute }
+  | { kind: "family"; family: RoutingFamily }
+  | { kind: "policy"; policy: Exclude<RoutingPolicy, "fixed"> };
+
+export function parseSessionRoutingDirective(text: string): SessionRoutingDirective | undefined {
   const normalized = text.trim().toLowerCase().replace(/[.!]$/, "");
   const fixed = normalized.match(/^(?:please )?use (spark|luna|terra|sol|grok) for everything(?: this session)?$/);
-  if (fixed) return { policy: "fixed", fixed: resolveRoutingModelAlias(fixed[1])! };
+  if (fixed) return { kind: "fixed", fixed: resolveRoutingModelAlias(fixed[1])! };
   const family = normalized.match(/^(?:please )?use (codex|grok) routing(?: this session)?$/);
-  if (family) return family[1] === "grok" ? { policy: "balanced", family: "grok" } : { policy: "balanced" };
+  if (family) return { kind: "family", family: family[1] === "grok" ? "grok" : "codex" };
   const policy = normalized.match(/^(?:please )?use (balanced|economy|quality) routing(?: this session)?$/);
-  return policy ? { policy: policy[1] as Exclude<RoutingPolicy, "fixed"> } : undefined;
+  return policy ? { kind: "policy", policy: policy[1] as Exclude<RoutingPolicy, "fixed"> } : undefined;
 }
