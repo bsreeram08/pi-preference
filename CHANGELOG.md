@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Removed `pi-subagents`, `@capyup/pi-goal`, `@juicesharp/rpiv-todo`, and `@juicesharp/rpiv-ask-user-question` from the approved capability inventory now that first-party Workbench agents, todos, asks, and goals replace them.
 - Added first-party `workbench_todo`, `workbench_ask`, and `workbench_goal` (`/todos`, `/goals`, `/goals-set`, `/goals-clear`) so session lists, structured questions, and user-owned goals no longer need third-party packages.
 - Stopped rewriting external `subagent` tool calls; routing now tells children to use `delegate_task` and `workbench_agent_start` instead.
 - Read-only Workbench agents that receive `bash` now fail closed on ordinary workspace mutations (redirects, rm/mv/cp, git write verbs, package installs). This is a policy filter, not a sandbox.
