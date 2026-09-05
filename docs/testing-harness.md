@@ -42,6 +42,16 @@ Run `/workflow-status` and inspect the reported artifact paths. Look for `checks
 
 The automated tests cover stale receipts and tampered artifacts. For a manual failure demonstration, ask the main Pi tool to run a deliberately failing test in the scratch project and confirm it produces a non-passing receipt. A full workflow may correctly repair a defect and pass later; inspect the final checks rather than expecting the entire workflow to remain failed.
 
-## Research status
+## Research checks
 
-The research redesign is a proposal, not part of the implemented verification changes. Existing research audits can accept unbound provenance, count bibliography entries as citations, and overlook evidence marked for review. Do not treat a research PASS as the same guarantee as a native code-check receipt. See [the evaluation guide](harness-evaluation.md) for the proposed flow and quality comparison method.
+Run the provenance and audit regressions:
+
+```sh
+rtk proxy bun test tests/research-provenance.test.ts
+```
+
+In Pi, use `/research` for a narrow question with accessible official sources. Inspect the report, `evidence.jsonl`, and `sources/*.json` under the reported run directory. Every sourced factual record should identify a saved artifact, a matching excerpt, and an actual retrieval timestamp. An inaccessible page or mismatched excerpt must remain unverified and prevent a clean audit.
+
+In a disposable research run, use `/research-refresh all`: even unchanged pages require a new independent audit, and a prior failure must remain unresolved. Use `/research-source` to explicitly review and re-baseline changed source claims, followed by `/research-synthesize` or `/research-audit`. Only `/research-observation` submissions can establish user verification. Old ledgers without source artifacts need this explicit review before passing.
+
+The regression tests also alter source artifacts and insert invented provenance, bibliography-only citations, unresolved refresh failures, and conflicting audit verdicts. Each must fail the relevant gate. Run these offline tests rather than corrupting a useful research run. A clean audit still depends on the reviewer's judgment of source authority and claim support; live-model comparisons remain to be measured.

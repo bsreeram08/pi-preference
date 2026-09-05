@@ -172,19 +172,21 @@ GPT Luna/Sol children use priority service when `fastMode` is true (project defa
 
 `workbench_verify` accepts literal `argv`, an optional project-relative `cwd`, acceptance `criterionIds`, an evidence `kind`, and a timeout. The runtime records actual exit/interruption status, private JSON/log artifacts, output digests, and before/after code fingerprints. Workflow completion additionally checks invocation/result correlation and the final workspace fingerprint. Ordinary Bash output and a model-written “passed” statement cannot replace these receipts.
 
-Fingerprints include dirty tracked files, non-ignored untracked files, modes, symlink targets, and initialized submodules. Ignored files and Workbench runtime state are excluded; external dependencies and services are not frozen. The model receives a bounded output tail, while full output is retained privately up to the limit. This is cooperative execution evidence, not an OS sandbox or a guarantee that the selected tests are sufficient.
+In Git projects, fingerprints include dirty tracked files, non-ignored untracked files, modes, symlink targets, and initialized submodules. Non-Git projects use a bounded filesystem snapshot of all files without following symlinks; no Git ignore rules apply there. Ignored files and Workbench runtime state are excluded; external dependencies and services are not frozen. The model receives a bounded output tail, while full output is retained privately up to the limit. This is cooperative execution evidence, not an OS sandbox or a guarantee that the selected tests are sufficient.
 
 Children receive explicit global/project `AGENTS.md`, supported Markdown references, and task-selected installed skills while ambient extension/skill discovery remains disabled. Missing skills are reported. Routing uses the original task, independent code review omits the author's self-assessment, cases are recalled by relevance, and paused goals are excluded from active instructions.
 
 Workbench checks Pi's project-trust decision before launching children. For an untrusted project, run `/trust` and restart Pi before launching a workflow.
 
-## Research: current behavior and next design
+## Research evidence flow
 
-`/research` currently runs parallel tracks, builds an evidence ledger, synthesizes a report, and requests an independent audit. Its prompts distinguish primary sources, reported claims, inference, conflicting evidence, and user observations.
+The flow now collects sources before quantitative analysis, then synthesizes and independently audits the report. Every depth retains a counterevidence track. Market classification recognizes generic competitor, pricing, and demand questions while preserving technical routing for API/package questions.
 
-Its current audit is limited: model-supplied provenance is not bound to recorded retrievals, bibliography references can satisfy a report-wide citation check, and unresolved source-review states can escape the deterministic audit. A research PASS is not equivalent to a native code-check receipt.
+The parent independently retrieves cited URLs, using the browser fallback when needed, and records source text and metadata in `research/runs/<run>/sources/`. Worker-provided hashes, timestamps, and verification labels cannot establish provenance. A factual claim needs an excerpt found in its recorded source. Only the observation submission UI can establish user verification. Temporary track citations are mapped to canonical evidence IDs mechanically.
 
-The proposed flow is **decision → research questions → recorded source retrievals → supported claims → calculations → synthesis → independent claim audit → targeted corrections**. This redesign is documented, not implemented. See [Harness evaluation](docs/harness-evaluation.md) for the evidence requirements and comparison method. Automated harness tests do not establish improved live-model output quality.
+Audits validate saved source artifacts, exclude the bibliography from body-citation counts, flag uncited numeric passages, and reject unresolved source states. Refreshing sources requires a fresh audit and cannot clear an earlier failure. Failed synthesis or an unsuccessful/ambiguous auditor cannot produce a clean pass. Oversized review inputs stop explicitly instead of being silently truncated.
+
+These checks establish retrieval and excerpt provenance. The independent reviewer still judges whether an excerpt supports the claim, whether the source is authoritative, and whether calculations and recommendations follow. An audit is not proof of truth. Legacy ledgers without recorded sources need explicit source review and re-baselining. Track selection remains template-based; adaptive question planning, automatic targeted corrections, larger-report batching, and measured live-model comparisons remain future work. See [Harness evaluation](docs/harness-evaluation.md) and [Testing the harness](docs/testing-harness.md).
 
 ## Project files
 

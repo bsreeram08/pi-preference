@@ -26,6 +26,8 @@ describe("task-specific child context", () => {
       expect(bundle).toContain("Write a failing behavioral test first");
       expect(bundle).toContain("Skills not supplied");
       expect(bundle).not.toContain("emil-design-eng");
+      const integration = await buildAgentContext({ projectRoot, agentDir, home, role: "integration-implementer", task: "Fix build" });
+      expect(integration).toContain("Write a failing behavioral test first");
     } finally { await fs.rm(base, { recursive: true, force: true }); }
   });
 

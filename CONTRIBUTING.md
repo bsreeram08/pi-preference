@@ -47,7 +47,7 @@ The installer integration check must use a temporary Pi agent directory, not you
 
 Changes to memory, child tools, installation, process execution, or trust boundaries need focused regression tests. Never weaken a fail-closed check solely to make a test pass.
 
-Use [Testing the harness](docs/testing-harness.md) for a real Pi tool check and a scratch-project workflow. Native receipts establish command execution and code identity; reviewers must also assess test adequacy. Follow [Harness evaluation](docs/harness-evaluation.md) before claiming improved model quality. The research flow described there remains proposed work.
+Use [Testing the harness](docs/testing-harness.md) for a real Pi tool check and a scratch-project workflow. Native receipts establish command execution and code identity; reviewers must also assess test adequacy. Follow [Harness evaluation](docs/harness-evaluation.md) before claiming improved model quality. Research provenance and audit regression tests cover mechanical guarantees; the evaluation guide distinguishes implemented behavior from remaining research improvements.
 
 ## Pull requests
 

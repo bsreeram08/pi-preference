@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import { auditPersistedResearch, collectResearchSources, recordResearchPage, recordUserObservation, sourceText, type ResearchSource } from "./research-provenance.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -14,6 +16,7 @@ import {
 } from "./project.ts";
 import {
   buildResearchAuditTask,
+  buildResearchAnalysisTask,
   buildResearchPlan,
   buildResearchSynthesisTask,
   buildResearchSystemPrompt,
@@ -26,12 +29,14 @@ import {
   researchAgentForTrack,
 } from "./research-prompts.ts";
 import {
-  auditResearchEvidence,
   createResearchRun,
   formatResearchAudit,
   formatResearchContext,
   loadResearchRun,
   mergeEvidence,
+  mergeResearchTrack,
+  canonicalizeResearchUrl,
+  preserveResearchAuditAfterRefresh,
   readEvidence,
   readResearchFile,
   saveResearchRun,
@@ -156,6 +161,25 @@ function auditSystemPrompt(): string {
   return `You are the independent Workbench Research evidence auditor. You are read-only. Do not repair or rewrite the report. Verify report claims against the supplied ledger and the actual cited source pages, recompute arithmetic, and fail material unsupported, inaccessible, excerpt-mismatched, or mis-cited claims. Agent agreement and a structured ledger are not evidence by themselves.`;
 }
 
+async function retrieveResearchPage(deps: ResearchRegistrationDependencies, url: string, signal?: AbortSignal, excerpts: string[] = []) {
+  let fetched: Awaited<ReturnType<typeof fetchResearchUrl>> | undefined;
+  try {
+    fetched = await fetchResearchUrl(url, { maxChars: 100_000, signal });
+    if (!excerpts.length || excerpts.some((excerpt) => sourceText(fetched!.text).includes(sourceText(excerpt)))) return fetched;
+  } catch { signal?.throwIfAborted(); }
+  try {
+    const result = await deps.exec(process.execPath, [fileURLToPath(new URL("./research-browser.mjs", import.meta.url)), url, "100000"], { signal, timeout: 70_000 });
+    if (result.code !== 0) throw new Error("Research browser could not retrieve the source.");
+    const page = JSON.parse(result.stdout);
+    if (page.status < 200 || page.status >= 300 || !page.status) throw new Error("Research browser did not retrieve a successful source page.");
+    return { ...page, contentType: "text/html" } as Awaited<ReturnType<typeof fetchResearchUrl>>;
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (fetched) return fetched; // Preserve observed static content; unmatched excerpts remain unverified.
+    throw error;
+  }
+}
+
 async function performIndependentAudit(
   root: string,
   run: ResearchRun,
@@ -185,6 +209,7 @@ async function performIndependentAudit(
     progress,
     { dashboard, groupId, groupTitle: "Independent audit", jobId: `${groupId}-auditor` },
   );
+  if (result.exitCode !== 0 || !result.output.trim()) return `Independent auditor did not complete successfully.\n<research-audit status="fail"/>`;
   return result.output;
 }
 
@@ -260,24 +285,36 @@ async function startResearch(
       qmdContext = formatQmdResults(await searchQmd(projectPaths, deps.exec, `${question} ${decision}`, 10));
     }
 
-    const agents = run.tracks.map((track) => researchAgentForTrack(track, config.researchWorkerModel));
+    const analytical = (track: ResearchRun["tracks"][number]) => /quantitative/.test(track.id);
+    const collectionTracks = run.tracks.filter((track) => !analytical(track));
+    const agents = collectionTracks.map((track) => researchAgentForTrack(track, config.researchWorkerModel));
     const results = await runAgentsParallel(
       root,
       agents,
-      (agent) => buildResearchSystemPrompt(run.tracks[agents.indexOf(agent)]),
-      (agent) => buildResearchTrackTask(run, run.tracks[agents.indexOf(agent)], qmdContext),
+      (agent) => buildResearchSystemPrompt(collectionTracks[agents.indexOf(agent)]),
+      (agent) => buildResearchTrackTask(run, collectionTracks[agents.indexOf(agent)], qmdContext),
       signal,
       progress.update,
       { dashboard: deps.dashboard, groupId: "research-tracks", groupTitle: "Research tracks" },
     );
 
     const trackReports: string[] = [];
+    const sourceCache = new Map<string, ResearchSource>();
+    const orderedTracks = [...collectionTracks, ...run.tracks.filter(analytical)];
     for (let index = 0; index < run.tracks.length; index++) {
-      const track = run.tracks[index];
-      const result = results[index];
+      const track = orderedTracks[index];
+      const result = analytical(track)
+        ? await runSingleAgent(root, { ...researchAgentForTrack(track, config.researchWorkerModel), allowBash: true }, buildResearchSystemPrompt(track),
+          buildResearchAnalysisTask(run, track, trackReports.join("\n\n"), evidence),
+          signal, progress.update, { dashboard: deps.dashboard, groupId: "research-analysis", groupTitle: "Quantitative analysis", jobId: track.id })
+        : results[collectionTracks.indexOf(track)];
       const parsed = parseResearchAgentOutput(result.output);
-      evidence = mergeEvidence(evidence, parsed.evidence, run, track.id);
-      track.status = result.exitCode === 0 ? "complete" : "failed";
+      await collectResearchSources(root, run, parsed.evidence, (url) => retrieveResearchPage(deps, url, signal, parsed.evidence.filter((entry) => canonicalizeResearchUrl(entry.sourceUrl) === url).map((entry) => entry.excerpt).filter((excerpt): excerpt is string => typeof excerpt === "string" && Boolean(excerpt.trim()))), sourceCache, signal);
+      const merged = mergeResearchTrack(evidence, parsed.evidence, run, track.id, parsed.findings, parsed.openQuestions, sourceCache);
+      evidence = merged.evidence;
+      parsed.findings = merged.findings;
+      parsed.openQuestions = merged.openQuestions;
+      track.status = result.exitCode === 0 && !parsed.parseWarning ? "complete" : "failed";
       track.agentId = result.agentId;
       track.completedAt = ISO();
       track.outputPath = trackPath(run, track.id);
@@ -309,7 +346,7 @@ async function startResearch(
       run.status = "blocked";
       const blockedReport = `# Research blocked\n\nEvery research track failed. Inspect the track files and provider/tool errors before retrying.\n\n${trackReports.join("\n\n---\n\n")}`;
       await writeResearchFile(root, run.paths.report, blockedReport);
-      const audit = auditResearchEvidence(run, evidence, blockedReport);
+      const audit = await auditPersistedResearch(root, run, evidence, blockedReport);
       run.auditStatus = audit.status;
       run.auditIssueCount = audit.issues.length;
       await writeResearchFile(root, run.paths.audit, formatResearchAudit(run, audit));
@@ -339,9 +376,8 @@ async function startResearch(
       progress.update,
       { dashboard: deps.dashboard, groupId: "research-synthesis", groupTitle: "Synthesis", jobId: "research-synthesis" },
     );
-    const synthesisBody = synthesis.exitCode === 0
-      ? synthesis.output
-      : `# Research synthesis failed\n\nThe synthesis agent failed. Track reports follow for manual review.\n\n${trackReports.join("\n\n---\n\n")}`;
+    if (synthesis.exitCode !== 0 || !synthesis.output.trim()) throw new Error("Research synthesis failed; saved track reports remain available.");
+    const synthesisBody = synthesis.output;
     const reportHeader = `> Workbench Research run: ${run.id}  \n> Evidence as of: ${run.asOf}  \n> Geography: ${run.geography ?? "not constrained"}  \n> Web-derived prices, listings, ratings and availability remain unverified until directly confirmed.\n\n`;
     const fullReport = `${reportHeader}${synthesisBody.trim()}\n\n${formatEvidenceIndex(evidence)}`;
     await writeResearchFile(root, run.paths.report, fullReport);
@@ -352,10 +388,11 @@ async function startResearch(
     const independentAudit = await performIndependentAudit(
       root, run, fullReport, evidence, config.researchAuditModel, progress.update, deps.dashboard, signal,
     );
-    const deterministicAudit = auditResearchEvidence(run, evidence, fullReport);
+    const deterministicAudit = await auditPersistedResearch(root, run, evidence, fullReport);
     const independentStatus = parseIndependentAuditStatus(independentAudit);
+    run.independentAuditStatus = independentStatus ?? "fail";
     if (!independentStatus) {
-      deterministicAudit.issues.push({ severity: "warning", code: "AUDITOR_UNSTRUCTURED", message: "Independent auditor did not return a valid status marker." });
+      deterministicAudit.issues.push({ severity: "critical", code: "AUDITOR_UNSTRUCTURED", message: "Independent auditor did not return a valid status marker." });
     } else if (statusRank(independentStatus) > statusRank(deterministicAudit.status)) {
       deterministicAudit.issues.push({
         severity: independentStatus === "fail" ? "critical" : "warning",
@@ -413,10 +450,10 @@ async function addSource(ctx: any, deps: ResearchRegistrationDependencies, rawAr
   if (!url) return;
   let fetched: Awaited<ReturnType<typeof fetchResearchUrl>> | undefined;
   let fetchError = "";
-  try { fetched = await fetchResearchUrl(url, { maxChars: 20_000 }); } catch (error) { fetchError = error instanceof Error ? error.message : String(error); }
+  try { fetched = await retrieveResearchPage(deps, url); } catch (error) { fetchError = error instanceof Error ? error.message : String(error); }
   if (!claim) claim = (await ctx.ui.editor("Claim supported by this source", fetched?.description ?? "State one atomic claim."))?.trim() ?? "";
   if (!claim) return;
-  const excerpt = (await ctx.ui.editor("Supporting excerpt / notes", fetched?.text.slice(0, 800) ?? fetchError))?.trim() ?? "";
+  const excerpt = (await ctx.ui.editor("Exact supporting excerpt", fetched?.text.slice(0, 800) ?? fetchError))?.trim() ?? "";
   const tierLabel = await ctx.ui.select("Source tier", ["Primary", "Official", "Direct platform/listing/social", "Secondary", "Unknown"]);
   if (!tierLabel) return;
   const tierMap: Record<string, ResearchEvidence["sourceTier"]> = {
@@ -424,6 +461,8 @@ async function addSource(ctx: any, deps: ResearchRegistrationDependencies, rawAr
   };
   const volatile = await ctx.ui.confirm("Volatile source?", "Choose Yes for prices, listings, ratings, menus, availability and other frequently changing data.");
   let evidence = await readEvidence(current.root, current.run);
+  const sources = new Map<string, ResearchSource>();
+  if (fetched) sources.set(canonicalizeResearchUrl(url)!, await recordResearchPage(current.root, current.run, fetched));
   evidence = mergeEvidence(evidence, [{
     claim,
     kind: "reported-claim",
@@ -440,7 +479,7 @@ async function addSource(ctx: any, deps: ResearchRegistrationDependencies, rawAr
     volatile,
     contentHash: fetched?.contentHash,
     notes: fetchError || undefined,
-  }], current.run, "manual-source");
+  }], current.run, "manual-source", { sources });
   await writeEvidence(current.root, current.run, evidence);
   current.run.status = "complete-with-gaps";
   current.run.auditStatus = undefined;
@@ -477,7 +516,7 @@ async function addObservation(ctx: any, deps: ResearchRegistrationDependencies, 
     excerpt: details,
     volatile: type === "Phone call" || type === "Vendor quote",
     notes: `${type}${source ? ` — ${source}` : ""}`,
-  }], current.run, "user-observation");
+  }], current.run, "user-observation", { observation: await recordUserObservation(current.root, current.run, details, observedAt || new Date().toISOString().slice(0, 10)) });
   await writeEvidence(current.root, current.run, evidence);
   current.run.status = "complete-with-gaps";
   current.run.auditStatus = undefined;
@@ -522,6 +561,7 @@ async function synthesizeCurrent(ctx: any, deps: ResearchRegistrationDependencie
       progress.update,
       { dashboard: deps.dashboard, groupId: "research-resynthesis", groupTitle: "Re-synthesis", jobId: "research-resynthesis" },
     );
+    if (synthesis.exitCode !== 0 || !synthesis.output.trim()) throw new Error("Research synthesis failed; previous report retained.");
     const reportHeader = `> Workbench Research run: ${current.run.id}  \n> Re-synthesized: ${ISO()}  \n> Evidence as of: ${current.run.asOf}  \n> Geography: ${current.run.geography ?? "not constrained"}  \n> Web-derived prices, listings, ratings and availability remain unverified until directly confirmed.\n\n`;
     const fullReport = `${reportHeader}${synthesis.output.trim()}\n\n${formatEvidenceIndex(evidence)}`;
     await writeResearchFile(current.root, current.run.paths.report, fullReport);
@@ -539,9 +579,10 @@ async function synthesizeCurrent(ctx: any, deps: ResearchRegistrationDependencie
       undefined,
       "research-resynthesis-audit",
     );
-    const audit = auditResearchEvidence(current.run, evidence, fullReport);
+    const audit = await auditPersistedResearch(current.root, current.run, evidence, fullReport);
     const independentStatus = parseIndependentAuditStatus(independent);
-    if (!independentStatus) audit.issues.push({ severity: "warning", code: "AUDITOR_UNSTRUCTURED", message: "Independent auditor omitted its status marker." });
+    current.run.independentAuditStatus = independentStatus ?? "fail";
+    if (!independentStatus) audit.issues.push({ severity: "critical", code: "AUDITOR_UNSTRUCTURED", message: "Independent auditor omitted its status marker." });
     else if (statusRank(independentStatus) > statusRank(audit.status)) audit.issues.push({ severity: independentStatus === "fail" ? "critical" : "warning", code: "INDEPENDENT_AUDIT", message: `Independent audit returned ${independentStatus.toUpperCase()}.` });
     recomputeAuditStatus(audit);
     current.run.auditStatus = audit.status;
@@ -552,6 +593,12 @@ async function synthesizeCurrent(ctx: any, deps: ResearchRegistrationDependencie
     await saveResearchRun(current.projectPaths.stateDir, current.run);
     if (config.qmdEnabled) await refreshQmd(deps.exec);
     deps.report("Research re-synthesized", `Status: **${current.run.status}**\nAudit: **${audit.status.toUpperCase()}**\n\nReport: ${current.run.paths.report}\nAudit: ${current.run.paths.audit}`);
+  } catch (error) {
+    current.run.status = "blocked";
+    current.run.auditStatus = "fail";
+    current.run.independentAuditStatus = "fail";
+    await saveResearchRun(current.projectPaths.stateDir, current.run);
+    deps.report("Research operation failed", error instanceof Error ? error.message : String(error));
   } finally {
     deps.dashboard.endRun();
     progress.finish(current.run);
@@ -568,10 +615,13 @@ async function auditCurrent(ctx: any, deps: ResearchRegistrationDependencies): P
   deps.dashboard.beginRun(`research-audit-${Date.now()}`);
   const progress = researchProgress(ctx, "Research audit");
   try {
+    current.run.status = "auditing";
+    await saveResearchRun(current.projectPaths.stateDir, current.run);
     const independent = await performIndependentAudit(current.root, current.run, report, evidence, config.researchAuditModel, progress.update, deps.dashboard, undefined, `research-reaudit-${Date.now()}`);
-    const audit = auditResearchEvidence(current.run, evidence, report);
+    const audit = await auditPersistedResearch(current.root, current.run, evidence, report);
     const independentStatus = parseIndependentAuditStatus(independent);
-    if (!independentStatus) audit.issues.push({ severity: "warning", code: "AUDITOR_UNSTRUCTURED", message: "Independent auditor omitted its status marker." });
+    current.run.independentAuditStatus = independentStatus ?? "fail";
+    if (!independentStatus) audit.issues.push({ severity: "critical", code: "AUDITOR_UNSTRUCTURED", message: "Independent auditor omitted its status marker." });
     else if (statusRank(independentStatus) > statusRank(audit.status)) audit.issues.push({ severity: independentStatus === "fail" ? "critical" : "warning", code: "INDEPENDENT_AUDIT", message: `Independent audit returned ${independentStatus.toUpperCase()}.` });
     recomputeAuditStatus(audit);
     current.run.auditStatus = audit.status;
@@ -581,6 +631,12 @@ async function auditCurrent(ctx: any, deps: ResearchRegistrationDependencies): P
     await writeResearchManifest(current.root, current.run, evidence);
     await saveResearchRun(current.projectPaths.stateDir, current.run);
     deps.report("Research audit complete", `Status: **${audit.status.toUpperCase()}**\n\nIssues: ${audit.issues.length}\nAudit: ${current.run.paths.audit}`);
+  } catch (error) {
+    current.run.status = "blocked";
+    current.run.auditStatus = "fail";
+    current.run.independentAuditStatus = "fail";
+    await saveResearchRun(current.projectPaths.stateDir, current.run);
+    deps.report("Research operation failed", error instanceof Error ? error.message : String(error));
   } finally {
     deps.dashboard.endRun();
     progress.finish(current.run);
@@ -613,12 +669,13 @@ async function refreshCurrent(ctx: any, deps: ResearchRegistrationDependencies, 
   let completed = 0;
   await mapConcurrent(candidates, 3, async (entry) => {
     try {
-      const fetched = await fetchResearchUrl(entry.sourceUrl!, { maxChars: 20_000 });
+      const fetched = await retrieveResearchPage(deps, entry.sourceUrl!);
+      await recordResearchPage(current.root, current.run, fetched);
       entry.lastCheckedAt = fetched.retrievedAt;
       entry.refreshError = undefined;
       if (!entry.contentHash) {
-        entry.contentHash = fetched.contentHash;
-        entry.refreshStatus = "baseline-established";
+        entry.verificationStatus = "needs-review";
+        entry.refreshStatus = "changed";
       } else if (entry.contentHash === fetched.contentHash) {
         entry.refreshStatus = "unchanged";
       } else {
@@ -629,6 +686,7 @@ async function refreshCurrent(ctx: any, deps: ResearchRegistrationDependencies, 
     } catch (error) {
       entry.lastCheckedAt = ISO();
       entry.refreshStatus = "failed";
+      entry.verificationStatus = "needs-review";
       entry.refreshError = error instanceof Error ? error.message : String(error);
     } finally {
       completed++;
@@ -637,11 +695,12 @@ async function refreshCurrent(ctx: any, deps: ResearchRegistrationDependencies, 
   });
   await writeEvidence(current.root, current.run, evidence);
   const report = await readResearchFile(current.root, current.run.paths.report);
-  const audit = auditResearchEvidence(current.run, evidence, report);
+  const audit = await auditPersistedResearch(current.root, current.run, evidence, report);
   if (candidates.some((entry) => entry.refreshStatus === "changed")) {
     audit.issues.push({ severity: "warning", code: "SOURCE_CHANGED", message: "At least one source fingerprint changed; affected claims are marked needs-review." });
     recomputeAuditStatus(audit);
   }
+  preserveResearchAuditAfterRefresh(current.run, audit);
   current.run.auditStatus = audit.status;
   current.run.auditIssueCount = audit.issues.length;
   current.run.status = audit.status === "pass" ? "complete" : "complete-with-gaps";

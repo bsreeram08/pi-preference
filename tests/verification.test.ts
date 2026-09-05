@@ -20,6 +20,23 @@ async function fixture() {
 }
 
 describe("host-observed verification", () => {
+  test("verifies non-Git projects and detects file changes without following symlinks", async () => {
+    const { options, request } = await fixture();
+    await fs.rm(path.join(options.projectRoot, ".git"), { recursive: true });
+    const result = await runCheck(request, options);
+    expect(checkPassed(result.receipt, await workspaceSnapshot(options.projectRoot))).toBe(true);
+    await fs.mkdir(path.join(options.projectRoot, ".pi/pi-workbench"), { recursive: true });
+    await fs.writeFile(path.join(options.projectRoot, ".pi/pi-workbench/current.json"), "{}");
+    expect(await workspaceSnapshot(options.projectRoot)).toBe(result.receipt.snapshotAfter);
+    await fs.symlink(options.evidenceDir, path.join(options.projectRoot, "outside"));
+    const linked = await workspaceSnapshot(options.projectRoot);
+    await fs.writeFile(path.join(options.evidenceDir, "unrelated.txt"), "outside");
+    expect(await workspaceSnapshot(options.projectRoot)).toBe(linked);
+    await fs.writeFile(path.join(options.projectRoot, "code.txt"), "changed");
+    expect(checkPassed(result.receipt, await workspaceSnapshot(options.projectRoot))).toBe(false);
+    await fs.writeFile(path.join(options.projectRoot, ".git"), "gitdir: /missing-workbench-git-directory\n");
+    await expect(workspaceSnapshot(options.projectRoot)).rejects.toThrow();
+  });
   test("records the actual process, literal argv, output and current dirty code", async () => {
     const { options, request } = await fixture();
     const result = await runCheck(request, options);

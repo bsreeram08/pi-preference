@@ -1,3 +1,4 @@
+import { recordResearchPage } from "../research-provenance.ts";
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -668,6 +669,7 @@ describe("durable project state", () => {
 describe("research planning and evidence", () => {
   test("selects bounded profile-specific tracks", () => {
     expect(detectResearchMode("Find current commercial rent and competitors")).toBe("market");
+    expect(detectResearchMode("Compare competitor pricing and customer demand")).toBe("market");
     expect(detectResearchMode("Check the official SDK specification and API versions")).toBe("technical");
     expect(detectResearchMode("What is the current Node.js LTS release?")).toBe("technical");
     expect(detectResearchMode("As of 2026-09-03, map public user demand and scoped package names in the Pi coding-agent ecosystem")).toBe("technical");
@@ -716,6 +718,8 @@ describe("research planning and evidence", () => {
         tracks,
         providerSummary: ["test"],
       });
+      const fetchedPage = { requestedUrl: "https://example.com/price", finalUrl: "https://example.com/price", title: "Official price", text: "₹99 per hour", contentHash: "1".repeat(64), retrievedAt: "2026-08-17T00:00:00.000Z", contentType: "text/html", truncated: false };
+      const sources = new Map([[fetchedPage.requestedUrl, await recordResearchPage(root, run, fetchedPage)]]);
       let evidence = mergeEvidence([], [{
         claim: "The official rate is ₹99 per hour.",
         kind: "fact",
@@ -727,7 +731,7 @@ describe("research planning and evidence", () => {
         retrievedAt: "2026-08-17T00:00:00.000Z",
         excerpt: "₹99 per hour",
         volatile: true,
-      }], run, "competition-pricing");
+      }], run, "competition-pricing", { sources });
       await writeEvidence(root, run, evidence);
       run.status = "complete";
       await saveResearchRun(councilState, run);
@@ -746,6 +750,7 @@ describe("research planning and evidence", () => {
 
       evidence[0].verificationStatus = "needs-review";
       evidence[0].contentHash = "old-hash";
+      sources.set(fetchedPage.requestedUrl, await recordResearchPage(root, run, { ...fetchedPage, text: "Updated ₹99 per hour", contentHash: "2".repeat(64), retrievedAt: "2026-08-18T00:00:00.000Z" }));
       const reviewed = mergeEvidence(evidence, [{
         claim: evidence[0].claim,
         sourceUrl: evidence[0].sourceUrl,
@@ -756,9 +761,9 @@ describe("research planning and evidence", () => {
         retrievedAt: "2026-08-18T00:00:00.000Z",
         excerpt: "Updated ₹99 per hour",
         contentHash: "new-hash",
-      }], run, "manual-source");
+      }], run, "manual-source", { sources });
       expect(reviewed).toHaveLength(1);
-      expect(reviewed[0].contentHash).toBe("new-hash");
+      expect(reviewed[0].contentHash).toBe("2".repeat(64));
       expect(reviewed[0].verificationStatus).toBe("web-retrieved");
     } finally {
       await fs.rm(root, { recursive: true, force: true });

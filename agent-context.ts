@@ -44,7 +44,7 @@ export async function buildAgentContext(options: {
       }
     }
   }
-  const aliases: Record<string, string> = { developer: "implementer", fixer: "implementer", verifier: "quality-reviewer", qa: "quality-reviewer", architect: "technical-reviewer", product: "requirements-analyst" };
+  const aliases: Record<string, string> = { developer: "implementer", fixer: "implementer", "integration-implementer": "implementer", verifier: "quality-reviewer", qa: "quality-reviewer", architect: "technical-reviewer", product: "requirements-analyst" };
   const profile = getWorkflowAgentProfile(aliases[options.role] ?? (options.role.endsWith("-implementation") ? "implementer" : options.role));
   const skills = profile ? routeConcepts(options.task, profile.id).skills : [];
   let skillBytes = 0;

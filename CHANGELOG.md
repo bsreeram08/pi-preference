@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Addressed review feedback: support native verification in non-Git projects, supply implementation skills to the integration implementer, and restore generic market-research classification.
+- Record research source snapshots in the parent, bind excerpts and actual retrieval metadata, restrict user verification to submitted observations, and map temporary citations mechanically. Audits reject unbound or altered sources, uncited numeric passages, unresolved refresh states, failed/ambiguous auditors, and silently incomplete inputs. Fast research retains counterevidence, and quantitative analysis follows source collection.
+
 - Documented native verification smoke tests and a scratch-project focused workflow. Updated the README and support guidance for current execution evidence and explicitly separated the proposed research redesign from shipped behavior.
 
 - Rewrote the README as a product map of first-party Workbench: Coordinator, agents, session tools, cases vs memory, routing, and the replaced companions.

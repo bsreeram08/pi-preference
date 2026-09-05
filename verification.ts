@@ -50,6 +50,43 @@ function inside(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+/** Non-Git projects include all files: there is no implicit ignore policy. */
+async function filesystemSnapshot(root: string): Promise<string> {
+  const hash = createHash("sha256").update("filesystem\0").update(root);
+  let entries = 0;
+  let bytes = 0;
+  const walk = async (relative: string, depth: number): Promise<void> => {
+    if (depth > 64 || ++entries > 20_000) throw new Error("Verification filesystem snapshot exceeds traversal limits.");
+    if (relative === ".pi/pi-workbench" || path.basename(relative) === ".git") return;
+    const file = path.join(root, relative);
+    const stat = await fs.lstat(file);
+    hash.update(relative).update("\0").update(String(stat.mode & 0o777)).update("\0");
+    if (stat.isSymbolicLink()) hash.update("link\0").update(await fs.readlink(file));
+    else if (stat.isDirectory()) {
+      hash.update("directory\0");
+      for (const name of (await fs.readdir(file)).sort()) {
+        // Creating only Workbench state must not affect the project snapshot.
+        if (!relative && name === ".pi") {
+          const piStat = await fs.lstat(path.join(root, name));
+          if (piStat.isDirectory()) {
+            const children = (await fs.readdir(path.join(root, name))).filter((child) => child !== "pi-workbench").sort();
+            for (const child of children) await walk(path.join(name, child), depth + 1);
+            continue;
+          }
+        }
+        await walk(path.join(relative, name), depth + 1);
+      }
+    } else if (stat.isFile()) {
+      bytes += stat.size;
+      if (stat.size > 32 * 1024 * 1024 || bytes > 256 * 1024 * 1024) throw new Error("Verification filesystem snapshot exceeds content limits.");
+      hash.update("file\0").update(digest(await fs.readFile(file)));
+    } else throw new Error("Verification snapshot requires ordinary files or symlinks.");
+    hash.update("\0");
+  };
+  await walk("", 0);
+  return hash.digest("hex");
+}
+
 /** Fingerprint current tracked and non-ignored untracked content, including dirty work.
  * Workbench's own state is excluded. Ignored build output is outside this claim.
  * Checked-out submodules are fingerprinted recursively; missing ones fail visibly.
@@ -58,8 +95,22 @@ export async function workspaceSnapshot(root: string, depth = 0): Promise<string
   if (depth > 8) throw new Error("Verification submodule nesting exceeds eight levels.");
   root = await fs.realpath(root);
   const git = async (args: string[]) => (await exec("git", ["-C", root, ...args], {
-    maxBuffer: MAX_OUTPUT, timeout: 30_000,
+    maxBuffer: MAX_OUTPUT, timeout: 30_000, env: { ...process.env, LC_ALL: "C" },
   })).stdout;
+  try { await git(["rev-parse", "--show-toplevel"]); }
+  catch (error) {
+    if (depth === 0 && /not a git repository/.test(String((error as { stderr?: string }).stderr))) {
+      for (let directory = root; ; directory = path.dirname(directory)) {
+        let metadata = false;
+        try { await fs.lstat(path.join(directory, ".git")); metadata = true; }
+        catch (inspectionError) { if ((inspectionError as NodeJS.ErrnoException).code !== "ENOENT") throw inspectionError; }
+        if (metadata) throw error; // A broken Git checkout is not a non-Git project.
+        if (path.dirname(directory) === directory) break;
+      }
+      return filesystemSnapshot(root);
+    }
+    throw error;
+  }
   const files = (await git(["ls-files", "--cached", "--others", "--exclude-standard", "-z"]))
     .split("\0").filter(Boolean);
   const hash = createHash("sha256");

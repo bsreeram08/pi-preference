@@ -64,6 +64,7 @@ export interface ResearchRun {
   evidenceCount: number;
   auditStatus?: "pass" | "warning" | "fail";
   auditIssueCount?: number;
+  independentAuditStatus?: "pass" | "warning" | "fail";
   providerSummary?: string[];
 }
 
@@ -92,6 +93,7 @@ export interface ResearchEvidence {
   lastCheckedAt?: string;
   refreshStatus?: "unchanged" | "changed" | "baseline-established" | "failed";
   refreshError?: string;
+  provenance?: { kind: "retrieval" | "user-observation"; path: string; digest: string };
 }
 
 export interface ParsedResearchAgentOutput {
