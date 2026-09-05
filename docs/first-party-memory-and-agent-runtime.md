@@ -2,6 +2,7 @@
 
 > Status: Agent Runtime, interactive cmux Pi TUI sessions, Cases, and first-party todo/ask/goal are on `main`. `pi-subagents`, `pi-goal`, `rpiv-todo`, and `rpiv-ask-user-question` are replaced. Session Observations, persistent mutation agents, and the remaining companion packages are later slices.
 > Product map: [`README.md`](../README.md). Trust boundaries: [`SECURITY.md`](../SECURITY.md). Memory lifecycle: [`memory.md`](memory.md).
+> Current child-context behavior and limits: [Child instructions and skills](child-context.md). Operational checks and launch failures: [Testing](testing-harness.md) and [Troubleshooting](troubleshooting.md). The pre-runtime baseline below is historical design context, not a list of outstanding defects.
 > Reference snapshots (untrusted, not installed): `pi-observational-memory@78a1efcfdd46`, `pi-interactive-subagents@c3e8b53c0754`, upstream cmux adapter `HazAT/pi-interactive-subagents@c100577ebf73`.
 
 ## Decision
@@ -78,7 +79,9 @@ Primary references:
 
 The fork is now tmux-only. Its README credits a multi-multiplexer upstream. The upstream cmux adapter is useful only as a command vocabulary reference: [cmux adapter](https://raw.githubusercontent.com/HazAT/pi-interactive-subagents/c100577ebf7393a11d098ad9810ec6c269dcfc30/pi-extension/subagents/cmux.ts). No source should be copied.
 
-## Current Workbench baseline
+## Historical baseline before the first-party runtime
+
+This section records the starting point for the design below. Its child-process, environment, persistence, and cmux gaps have since been addressed by the first-party runtime described in the status note above. Session Observations remain a later slice.
 
 Workbench already owns most of the safer architecture:
 
@@ -90,7 +93,7 @@ Workbench already owns most of the safer architecture:
 - `cmux-workbench.ts` already emits only versioned categorical metadata and does not forward prompts, tasks, outputs, summaries, raw errors, labels, or tool names.
 - `memory.ts`, `memory-store.ts`, and `memory-access.ts` already implement isolated agent namespaces, reviewed shared proposals, checksums, expiry, supersession, tombstones, atomic writes, locking, import review, and guarded child access.
 
-Important gaps:
+Gaps identified at that baseline:
 
 1. `subagents.ts` currently launches children with `--no-session`, so children cannot persist or resume.
 2. Child launch inherits `...process.env`; this is broader than required.
@@ -102,7 +105,7 @@ Important gaps:
 8. `cmux-workbench.ts` still listens to external `subagent:*` and `pi-intercom:*` events.
 9. `workbench_memory` intentionally has no automatic transcript capture, leaving room for a separate session-only continuity tier.
 
-Pi's current public API supports the clean design:
+The Pi API assessed for that design supported:
 
 - RPC mode provides strict JSONL framing, `prompt`, `steer`, `follow_up`, `abort`, `get_state`, `get_entries`, `get_tree`, `get_last_assistant_text`, `agent_settled`, and extension UI request/response.
 - `SessionManager` and `AgentSessionRuntime` provide supported persistent-session and fork/clone APIs; direct JSONL fabrication is unnecessary.
