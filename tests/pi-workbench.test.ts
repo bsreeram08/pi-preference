@@ -1,3 +1,4 @@
+import { recordResearchPage } from "../research-provenance.ts";
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -366,14 +367,15 @@ describe("project settings", () => {
   test("normalizes unsafe and invalid values", () => {
     expect(normalizeConfig({
       maxCouncilAgents: 100,
-      parallelImplementationWorkers: 1,
+      parallelImplementationWorkers: 0,
       maxFixLoops: -5,
       defaultImplementationSession: "invalid",
       qmdEnabled: "yes",
       fastMode: "yes",
     })).toEqual({
+      workflowMode: "focused",
       maxCouncilAgents: 8,
-      parallelImplementationWorkers: 2,
+      parallelImplementationWorkers: 1,
       maxFixLoops: 1,
       defaultImplementationSession: "ask",
       qmdEnabled: true,
@@ -529,6 +531,26 @@ describe("durable project state", () => {
     }
   });
 
+  test("blocks council subagents until the project is trusted", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-untrusted-"));
+    try {
+      const commandHarness = councilCommandHarness(root);
+      const notices: string[] = [];
+      const expected = "This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision, then restart pi.";
+      await commandHarness.commands.get("council")?.("Investigate this project", {
+        cwd: root,
+        hasUI: true,
+        isProjectTrusted: () => false,
+        ui: { notify(message: string) { notices.push(message); } },
+      } as any);
+      expect(notices).toEqual([expected]);
+      expect(commandHarness.reports.at(-1)).toEqual({ title: "Project trust required", body: expected });
+      expect(await fs.readdir(root)).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("council implementation mismatch launches neither workers nor a new session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "pi-workbench-council-command-"));
     const isolatedAgentDir = path.join(await fs.realpath(root), ".isolated-agent");
@@ -556,6 +578,7 @@ describe("durable project state", () => {
       const ctx = {
         cwd: root,
         hasUI: true,
+        isProjectTrusted: () => true,
         ui: {
           confirm: async () => {
             await saveSession(paths, replacement);
@@ -646,8 +669,12 @@ describe("durable project state", () => {
 describe("research planning and evidence", () => {
   test("selects bounded profile-specific tracks", () => {
     expect(detectResearchMode("Find current commercial rent and competitors")).toBe("market");
+    expect(detectResearchMode("Compare competitor pricing and customer demand")).toBe("market");
     expect(detectResearchMode("Check the official SDK specification and API versions")).toBe("technical");
     expect(detectResearchMode("What is the current Node.js LTS release?")).toBe("technical");
+    expect(detectResearchMode("As of 2026-09-03, map public user demand and scoped package names in the Pi coding-agent ecosystem")).toBe("technical");
+    expect(detectResearchMode("Should we open a cafe near the catchment and commercial property listings?")).toBe("market");
+    expect(detectResearchMode("What is the smallest valuable workflow product?")).toBe("general");
     expect(createResearchTracks("market", "fast", 6)).toHaveLength(3);
     expect(createResearchTracks("technical", "decision-grade", 4)).toHaveLength(4);
     expect(createResearchTracks("market", "decision-grade", 6).map((track) => track.id)).toContain("skeptic-gaps");
@@ -691,6 +718,8 @@ describe("research planning and evidence", () => {
         tracks,
         providerSummary: ["test"],
       });
+      const fetchedPage = { requestedUrl: "https://example.com/price", finalUrl: "https://example.com/price", title: "Official price", text: "₹99 per hour", contentHash: "1".repeat(64), retrievedAt: "2026-08-17T00:00:00.000Z", contentType: "text/html", truncated: false };
+      const sources = new Map([[fetchedPage.requestedUrl, await recordResearchPage(root, run, fetchedPage)]]);
       let evidence = mergeEvidence([], [{
         claim: "The official rate is ₹99 per hour.",
         kind: "fact",
@@ -702,7 +731,7 @@ describe("research planning and evidence", () => {
         retrievedAt: "2026-08-17T00:00:00.000Z",
         excerpt: "₹99 per hour",
         volatile: true,
-      }], run, "competition-pricing");
+      }], run, "competition-pricing", { sources });
       await writeEvidence(root, run, evidence);
       run.status = "complete";
       await saveResearchRun(councilState, run);
@@ -721,6 +750,7 @@ describe("research planning and evidence", () => {
 
       evidence[0].verificationStatus = "needs-review";
       evidence[0].contentHash = "old-hash";
+      sources.set(fetchedPage.requestedUrl, await recordResearchPage(root, run, { ...fetchedPage, text: "Updated ₹99 per hour", contentHash: "2".repeat(64), retrievedAt: "2026-08-18T00:00:00.000Z" }));
       const reviewed = mergeEvidence(evidence, [{
         claim: evidence[0].claim,
         sourceUrl: evidence[0].sourceUrl,
@@ -731,9 +761,9 @@ describe("research planning and evidence", () => {
         retrievedAt: "2026-08-18T00:00:00.000Z",
         excerpt: "Updated ₹99 per hour",
         contentHash: "new-hash",
-      }], run, "manual-source");
+      }], run, "manual-source", { sources });
       expect(reviewed).toHaveLength(1);
-      expect(reviewed[0].contentHash).toBe("new-hash");
+      expect(reviewed[0].contentHash).toBe("2".repeat(64));
       expect(reviewed[0].verificationStatus).toBe("web-retrieved");
     } finally {
       await fs.rm(root, { recursive: true, force: true });

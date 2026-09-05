@@ -57,6 +57,7 @@ import {
 import { loadConfig, type WorkbenchConfig } from "./config.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { ensureProjectState, findProjectRoot, getProjectPaths } from "./project.ts";
+import { guardSubagentLaunch } from "./project-trust.ts";
 import { getCommunityKnowledgePath } from "./skill-evolution.ts";
 import { runSingleAgent } from "./subagents.ts";
 import {
@@ -69,6 +70,7 @@ import { withExclusiveLease } from "./exclusive-lease.ts";
 import { createWorkflowLifecycleEvent, WORKFLOW_LIFECYCLE_EVENT, type WorkflowLifecycleErrorCode, type WorkflowLifecyclePhase } from "./workflow-lifecycle.ts";
 import { MODEL_ROUTING_RECEIPT_ENTRY } from "./model-routing.ts";
 import type { AgentResult, Exec } from "./types.ts";
+import { checkPassed } from "./verification.ts";
 import { formatAgentResults } from "./prompts.ts";
 import {
   formatRoutingReceipt,
@@ -108,6 +110,7 @@ interface DelegationToolDetails {
   mode: "single" | "parallel";
   results: AgentResult[];
   routes: Array<{ role: WorkflowAgentId; receipt: string; route: ModelRoute }>;
+  blocked?: string;
 }
 
 const RoutingEffortSchema = StringEnum(["auto", "light", "standard", "heavy"] as const, {
@@ -205,6 +208,14 @@ function renderAgentResult(result: AgentResult): string {
   return `## ${result.title} — ${status}\n\n${result.output}`;
 }
 
+function reviewRoles(config: WorkbenchConfig): Array<"quality-reviewer" | "technical-reviewer"> {
+  return config.workflowMode === "thorough" ? ["quality-reviewer", "technical-reviewer"] : ["technical-reviewer"];
+}
+
+function reviewCount(config: WorkbenchConfig): 1 | 2 {
+  return config.workflowMode === "thorough" ? 2 : 1;
+}
+
 export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDependencies): void {
   const { dashboard, exec, reprompterPath, report, getRoutingState } = dependencies;
   const runAgent = dependencies.runAgent ?? runSingleAgent;
@@ -241,13 +252,13 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     const base = getWorkflowAgentProfile(role);
     if (!base) throw new Error(`Unknown workflow agent: ${role}`);
     const route = routeTask({
-      task: delegatedTask,
+      task: userTask,
       role,
       effort,
       policy: getRoutingState(),
       readOnly: base.readOnly,
     });
-    const agent = resolveWorkflowAgent(role, config, delegatedTask, effort, getRoutingState());
+    const agent = resolveWorkflowAgent(role, config, userTask, effort, getRoutingState());
     if (!agent) throw new Error(`Unknown workflow agent: ${role}`);
     const receipt = formatRoutingReceipt(agent.title, route);
     pi.appendEntry(MODEL_ROUTING_RECEIPT_ENTRY, { content: receipt });
@@ -260,7 +271,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       guidance ? `${guidance}\n\n${delegatedTask}` : delegatedTask,
       signal,
       progress.update,
-      { dashboard, groupId, groupTitle, jobId, budget: route.budget },
+      { dashboard, groupId, groupTitle, jobId, budget: route.budget, contextTask: userTask },
     );
     throwIfWorkflowCancelled(signal);
     const routedResult: AgentResult = {
@@ -324,14 +335,12 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     round: number | string,
     signal?: AbortSignal,
   ): Promise<AgentResult[]> {
-    progress.update(`plan review ${round}: Quality Reviewer and Technical Reviewer running independently`);
+    const roles = reviewRoles(config);
+    progress.update(`plan review ${round}: ${roles.join(", ")}`);
     return runRoleBatch(
       root,
       config,
-      [
-        { role: "quality-reviewer", task: buildPlanReviewTask("quality-reviewer", task, plan) },
-        { role: "technical-reviewer", task: buildPlanReviewTask("technical-reviewer", task, plan) },
-      ],
+      roles.map((role) => ({ role, task: buildPlanReviewTask(role, task, plan) })),
       task,
       progress,
       `plan-review-${round}`,
@@ -445,8 +454,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     }
 
     throwIfWorkflowCancelled(signal);
-    progress.update("Requirements Analyst checking hidden gaps and scope");
-    const requirementsAnalysis = await runRole(
+    progress.update(config.workflowMode === "thorough" ? "Requirements Analyst checking hidden gaps and scope" : "Planner owns requirements and plan");
+    const requirementsAnalysis = config.workflowMode === "thorough" ? await runRole(
       root,
       config,
       "requirements-analyst",
@@ -457,7 +466,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       "Requirements Analyst gap analysis",
       agentJobId("gap-analysis", "requirements-analyst"),
       signal,
-    );
+    ) : { output: `Assess material requirements gaps as part of your plan. Preserve these explicit assumptions:\n${clearance.assumptions.join("\n")}` };
     throwIfWorkflowCancelled(signal);
     await writeWorkflowRunArtifact(workflowPaths, id, "requirements-analysis.md", requirementsAnalysis.output);
 
@@ -498,7 +507,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       state.reviewRounds = round;
       state.updatedAt = now();
       await writeWorkflowRunArtifact(workflowPaths, id, `plan-review-${round}.md`, planReviewText(reviews));
-      if (planReviewsPass(reviews)) break;
+      if (planReviewsPass(reviews, reviewCount(config))) break;
       if (round >= config.workflowMaxPlanReviewLoops) {
         state.status = "blocked";
         state.plan = plan;
@@ -579,7 +588,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       throwIfWorkflowCancelled(signal);
       state.reviewRounds += 1;
       await writeWorkflowRunArtifact(workflowPaths, id, "plan-review-user-edit.md", planReviewText(editedReviews));
-      if (!planReviewsPass(editedReviews)) {
+      if (!planReviewsPass(editedReviews, reviewCount(config))) {
         await saveWorkflowPlan(workflowPaths, state);
         progress.finish("needs_attention", "The edited plan needs another revision");
         report("Edited plan needs revision", `The user-edited plan remains a draft because an independent reviewer found a blocker.\n\n${planReviewText(editedReviews)}\n\nDraft: ${state.planPath}`);
@@ -621,8 +630,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     };
     await saveWorkflowPlan(workflowPaths, state);
 
-    progress.update("Execution Manager sequencing approved work");
-    const executionManager = await runRole(
+    progress.update(config.workflowMode === "thorough" ? "Execution Manager sequencing approved work" : "Implementer owns the approved sequence");
+    const executionManager = config.workflowMode === "thorough" ? await runRole(
       root,
       config,
       "execution-manager",
@@ -633,7 +642,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       "Execution management",
       agentJobId("execution", "execution-manager"),
       signal,
-    );
+    ) : { output: "## Execution\nFollow the approved plan directly. Inspect before editing, resolve implementation details from repository evidence, and report any material blocker.\n\n## Blockers\nNone" };
     throwIfWorkflowCancelled(signal);
     await writeWorkflowRunArtifact(workflowPaths, state.id, "execution-brief.md", executionManager.output);
     if (parseExecutionBlockerVerdict(executionManager.output) !== "clear") {
@@ -669,14 +678,11 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       state.updatedAt = now();
       await saveWorkflowPlan(workflowPaths, state);
 
-      progress.update(`review cycle ${cycle}: Quality Reviewer and Technical Reviewer`);
+      progress.update(`review cycle ${cycle}: independent code review`);
       const reviews = await runRoleBatch(
         root,
         config,
-        [
-          { role: "quality-reviewer", task: buildCodeReviewTask("quality-reviewer", state.task, state.plan, implementation.output, state.packet) },
-          { role: "technical-reviewer", task: buildCodeReviewTask("technical-reviewer", state.task, state.plan, implementation.output, state.packet) },
-        ],
+        reviewRoles(config).map((role) => ({ role, task: buildCodeReviewTask(role, state.task, state.plan, implementation.output, state.packet) })),
         state.task,
         progress,
         `execution-review-${cycle}`,
@@ -705,12 +711,13 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       );
       throwIfWorkflowCancelled(signal);
       const packetVerification: WorkflowPacketVerification | undefined = state.packet
-        ? evaluateWorkflowVerification(verification.output, state.packet)
+        ? evaluateWorkflowVerification(verification.output, state.packet, verification.verification)
         : undefined;
       const verificationRecord = packetVerification
         ? JSON.stringify(packetVerification, null, 2)
         : verification.output;
       await writeWorkflowRunArtifact(workflowPaths, state.id, `verification-${cycle}.md`, verificationRecord);
+      await writeWorkflowRunArtifact(workflowPaths, state.id, `checks-${cycle}.md`, JSON.stringify(verification.verification ?? { receipts: [] }, null, 2));
       if (packetVerification) {
         state.execution.packetVerification = packetVerification;
         state.updatedAt = now();
@@ -718,9 +725,10 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       }
       const verificationPassed = packetVerification
         ? packetVerificationPasses(packetVerification)
-        : legacyVerificationPasses(verification.output);
+        : legacyVerificationPasses(verification.output) && Boolean(verification.verification?.receipts.length
+          && verification.verification.receipts.every((receipt) => checkPassed(receipt, verification.verification!.snapshot)));
 
-      if (codeReviewsPass(reviews) && verificationPassed) {
+      if (codeReviewsPass(reviews, reviewCount(config)) && verificationPassed) {
         throwIfWorkflowCancelled(signal);
         state.status = "verified";
         state.updatedAt = now();
@@ -775,6 +783,11 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   }
 
   async function runPlanningCommand(rawArgs: string, ctx: ExtensionCommandContext): Promise<void> {
+    const trustRequired = guardSubagentLaunch(ctx);
+    if (trustRequired) {
+      report("Project trust required", trustRequired);
+      return;
+    }
     if (!ctx.hasUI) {
       report("Planner unavailable", "`/plan` requires interactive UI for its interview and approval checkpoints.");
       return;
@@ -785,7 +798,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     const authority = await captureWorkflowAuthority(project.workflowPaths);
     const confirmed = await ctx.ui.confirm(
       "Start high-accuracy Workflow planning?",
-      `Pi will run discovery, a bounded Planner interview, Requirements Analyst gap analysis, and up to ${project.config.workflowMaxPlanReviewLoops} Quality Reviewer + Technical Reviewer review rounds. No source files will be changed.`,
+      `Pi will use the ${project.config.workflowMode} workflow: discovery, a bounded Planner interview, planning, and up to ${project.config.workflowMaxPlanReviewLoops} independent review rounds. No source files will be changed.`,
     );
     if (!confirmed) return;
 
@@ -833,6 +846,11 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   }
 
   async function runStartWorkCommand(_rawArgs: string, ctx: ExtensionCommandContext): Promise<void> {
+    const trustRequired = guardSubagentLaunch(ctx);
+    if (trustRequired) {
+      report("Project trust required", trustRequired);
+      return;
+    }
     if (!ctx.hasUI) {
       report("Execution Manager unavailable", "`/start-work` requires interactive UI for the write confirmation.");
       return;
@@ -889,6 +907,11 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   }
 
   async function runAutopilotCommand(rawArgs: string, ctx: ExtensionCommandContext): Promise<void> {
+    const trustRequired = guardSubagentLaunch(ctx);
+    if (trustRequired) {
+      report("Project trust required", trustRequired);
+      return;
+    }
     if (!ctx.hasUI) {
       report("Autopilot unavailable", "`/autopilot` requires interactive UI for its initial cost and write confirmation.");
       return;
@@ -899,7 +922,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     const authority = await captureWorkflowAuthority(project.workflowPaths);
     const confirmed = await ctx.ui.confirm(
       "Start autopilot?",
-      `The Coordinator will plan with explicit conservative assumptions, run dual plan review, then let the Execution Manager and Implementer modify the working tree and verify it. Limits: ${project.config.workflowMaxPlanReviewLoops} plan-review rounds and ${project.config.workflowMaxFixLoops} fix loops.`,
+      `Pi will use the ${project.config.workflowMode} workflow to plan with explicit assumptions, implement, independently review, and verify with recorded checks. Limits: ${project.config.workflowMaxPlanReviewLoops} plan-review rounds and ${project.config.workflowMaxFixLoops} fix loops.`,
     );
     if (!confirmed) return;
 
@@ -967,6 +990,13 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       const hasSingle = Boolean(params.agent && params.task);
       const hasParallel = Boolean(params.tasks?.length);
       if (Number(hasSingle) + Number(hasParallel) !== 1) throw new Error("Provide exactly one mode: agent + task, or tasks[].");
+      const trustRequired = guardSubagentLaunch(ctx);
+      if (trustRequired) {
+        return {
+          content: [{ type: "text", text: trustRequired }],
+          details: { mode: hasParallel ? "parallel" : "single", results: [], routes: [], blocked: trustRequired },
+        };
+      }
       const project = await resolveProject(ctx);
       const ownsRun = !dashboard.state.currentRunId;
       if (ownsRun) dashboard.beginRun(`workflow-tool-${Date.now()}`);
@@ -1044,6 +1074,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     },
     renderResult(result, { isPartial }, theme) {
       const details = result.details as DelegationToolDetails | undefined;
+      if (details?.blocked) return new Text(theme.fg("warning", details.blocked), 0, 0);
       if (isPartial) {
         const receipts = details?.routes?.map((item) => item.receipt).join("\n");
         return new Text(theme.fg("warning", receipts || "Delegating…"), 0, 0);
@@ -1062,12 +1093,18 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     description: "Show the specialist roster, or run one specialist: /delegate <agent> <task>",
     handler: async (rawArgs, ctx) => {
       const [rawRole, ...rest] = rawArgs.trim().split(/\s+/).filter(Boolean);
-      const project = await resolveProject(ctx);
       if (!rawRole) {
+        const project = await resolveProject(ctx);
         const state = await loadCurrentWorkflowPlan(project.workflowPaths);
         report("Pi workflow", `${formatWorkflowPlanStatus(state)}\n\n## Specialist roster\n${formatWorkflowRoster(project.config)}\n\n## Commands\n- \`/plan <task>\` — interview and produce a reviewed plan\n- \`/start-work\` — execute the approved plan\n- \`/autopilot <task>\` — autonomous planning and execution\n- \`/preferences\` — durable personalization\n- \`/skills-evolve\` — trusted skill synchronization`);
         return;
       }
+      const trustRequired = guardSubagentLaunch(ctx);
+      if (trustRequired) {
+        report("Project trust required", trustRequired);
+        return;
+      }
+      const project = await resolveProject(ctx);
       const profile = getWorkflowAgentProfile(rawRole);
       if (!profile) {
         report("Unknown workflow agent", `Available: ${WORKFLOW_AGENT_IDS.join(", ")}`);
@@ -1122,7 +1159,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   });
 
   pi.registerCommand("plan", {
-    description: "Interview, research, and produce a dual-reviewed implementation plan without changing source files",
+    description: "Interview, research, and produce an independently reviewed implementation plan without changing source files",
     handler: runPlanningCommand,
   });
 

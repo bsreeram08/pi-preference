@@ -68,6 +68,16 @@ async function handle(command) {
       return;
     }
     if (fakeMode === "hang") return;
+    if (fakeMode.startsWith("check-")) {
+      const { runCheck } = await import("../../verification.ts");
+      const request = { argv: [process.execPath, "-e", 'console.log("real check output")'], criterionIds: ["behavior"], kind: "automated-test" };
+      if (fakeMode !== "check-unmatched") emit({ type: "tool_execution_start", toolCallId: "check-1", toolName: "workbench_verify", args: request });
+      const result = await runCheck(request, { projectRoot: process.cwd(), evidenceDir: process.env.PI_WORKBENCH_EVIDENCE_DIR, runId: process.env.PI_WORKBENCH_RUN_ID });
+      if (fakeMode === "check-tampered") fs.writeFileSync(path.join(process.env.PI_WORKBENCH_EVIDENCE_DIR, `${result.receipt.id}.log`), "forged");
+      emit({ type: "tool_execution_end", toolCallId: "check-1", toolName: "workbench_verify", result: { content: [{ type: "text", text: result.output }], details: { receipt: result.receipt } }, isError: false });
+      complete();
+      return;
+    }
     if (["question", "double-question", "concurrent-question", "long-question-id"].includes(fakeMode)) {
       waiting = true;
       emit({ type: "tool_execution_start", toolCallId: "ask-1", toolName: "ask_parent", args: { question: "Which path?" } });

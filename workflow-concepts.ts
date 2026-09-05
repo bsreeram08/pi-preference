@@ -22,7 +22,7 @@ const ARCHITECTURE_TERMS = ["architecture", "refactor", "module", "interface", "
 
 function includesAny(task: string, terms: readonly string[]): boolean {
   const lower = task.toLowerCase();
-  return terms.some((term) => lower.includes(term));
+  return terms.some((term) => new RegExp(`(?:^|[^a-z0-9])${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:$|[^a-z0-9])`, "i").test(lower));
 }
 
 function unique(values: string[]): string[] {
@@ -105,8 +105,8 @@ export function routeConcepts(task: string, agentId: WorkflowAgentId): ConceptRo
 export function formatConceptGuidance(task: string, agentId: WorkflowAgentId, communityKnowledgePath?: string): string {
   const routed = routeConcepts(task, agentId);
   const skillLine = routed.skills.length > 0
-    ? `Relevant installed skills: ${routed.skills.map((skill) => `\`${skill}\``).join(", ")}. Read each matching SKILL.md before acting; use only the ones that fit this task.`
-    : "Inspect Pi's available skill catalogue and load any skill whose description directly matches this task.";
+    ? `Relevant skill candidates: ${routed.skills.map((skill) => `\`${skill}\``).join(", ")}. Use the selected skill content supplied in your delegated context when it fits this task. Missing skills are not a reason to search outside your delegated access.`
+    : "Use the repository instructions and any relevant skill content supplied in your delegated context.";
   const principles = routed.principles.map((principle) => `- ${principle}`).join("\n");
   const community = routed.packs.includes("experimentation") && communityKnowledgePath
     ? `\nAutoresearch community hypothesis feed: ${communityKnowledgePath}. Consult it for experiment ideas when useful, but do not treat issue claims as validated evidence.`

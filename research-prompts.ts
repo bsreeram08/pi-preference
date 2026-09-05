@@ -13,7 +13,7 @@ const MARKET_TRACKS: TrackTemplate[] = [
   {
     id: "competition-pricing",
     title: "Competition and pricing",
-    scope: "Identify direct and adjacent competitors, current prices, formats, customer signals, and distance/catchment evidence. Distinguish board-game businesses from electronic-gaming analogues.",
+    scope: "Identify direct and adjacent competitors, current prices, formats, customer signals, and distance/catchment evidence. Identify which comparisons genuinely apply to the requested business and customer segment.",
     preferredSources: "Official venue sites, direct social posts, current Maps/place pages, current menus or booking pages; secondary guides only when dated and labelled.",
     description: "Local-market investigator focused on competitors, current pricing, and customer-facing positioning.",
   },
@@ -125,15 +125,17 @@ const GENERAL_TRACKS: TrackTemplate[] = [
 
 export function detectResearchMode(question: string): ResearchMode {
   const lower = question.toLowerCase();
+  if (/\b(cafe|restaurant|board-?game|catchment|commercial rent|commercial property|real estate)\b/.test(lower)) return "market";
   if (/\b(api|sdk|library|framework|documentation|docs|specification|source code|version|release|lts|runtime|dependency|package|migration|protocol|technical|node\.js)\b/.test(lower)) return "technical";
-  if (/\b(market|business|competitor|pricing|price|rent|property|customer|location|cafe|restaurant|commercial|demand|revenue|profit)\b/.test(lower)) return "market";
+  if (/\b(market|business|competitors?|pricing|price|rent|property|customers?|location|demand|revenue|profit)\b/.test(lower)) return "market";
   return "general";
 }
 
 export function createResearchTracks(mode: ResearchMode, depth: ResearchDepth, maxAgents: number): ResearchTrack[] {
   const templates = mode === "market" ? MARKET_TRACKS : mode === "technical" ? TECHNICAL_TRACKS : GENERAL_TRACKS;
   const count = Math.min(depth === "fast" ? 3 : 5, Math.max(3, maxAgents), templates.length);
-  return templates.slice(0, count).map((track) => ({
+  const selected = count === templates.length ? templates : [...templates.slice(0, count - 1), templates[templates.length - 1]];
+  return selected.map((track) => ({
     id: track.id,
     title: track.title,
     scope: track.scope,
@@ -192,7 +194,7 @@ Evidence discipline:
 - Direct-platform: current Maps, social post, booking page, menu or commercial listing supplied by the platform/owner; volatile and not independently verified.
 - Secondary: a third-party article or aggregation; label date and transferability limits.
 - User-observation: supplied call, visit, quote, photograph or measurement.
-- Search snippets are discovery evidence, not sufficient support for a material claim.
+- Search snippets are discovery evidence, not sufficient support for a material claim. The parent independently retrieves cited pages and binds excerpts to saved source artifacts. Never claim user verification; only actual user submissions can establish it.
 - Do not turn “not surfaced in this search” into “does not exist.”
 - Do not infer demand, revenue or causation from ratings, review counts, population or proximity.
 - Keep exact units and dates. Recalculate arithmetic.
@@ -201,7 +203,7 @@ Evidence discipline:
 Return the marker sections exactly. The JSON must be a valid array with no comments or Markdown fences.
 
 === FINDINGS ===
-Concise Markdown findings for your assigned scope. Cite evidence IDs as temporary labels T1, T2, etc.; the parent will replace them with canonical E-### IDs.
+Concise Markdown findings for your assigned scope. Cite T1 for the first evidence array item, T2 for the second, etc.; the parent mechanically replaces these labels with canonical E-### IDs. Use these same labels in conflictsWith.
 
 === EVIDENCE JSON ===
 [
@@ -278,7 +280,7 @@ export function parseResearchAgentOutput(output: string): ParsedResearchAgentOut
   try {
     const cleaned = evidenceText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
     const parsed = JSON.parse(cleaned) as unknown;
-    if (!Array.isArray(parsed)) throw new Error("Evidence JSON is not an array");
+    if (!Array.isArray(parsed) || parsed.length > 100 || parsed.some((entry) => !entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.claim !== "string" || !entry.claim.trim())) throw new Error("Evidence must contain at most 100 atomic claim objects");
     return { findings, evidence: parsed as ParsedResearchAgentOutput["evidence"], openQuestions };
   } catch (error) {
     return {
@@ -290,12 +292,17 @@ export function parseResearchAgentOutput(output: string): ParsedResearchAgentOut
   }
 }
 
-function truncateForPrompt(value: string, max = 22_000): string {
-  return value.length <= max ? value : `${value.slice(0, max)}\n\n[Track text truncated for synthesis; full track file remains on disk.]`;
+function boundedResearchContext(value: string, max = 22_000): string {
+  if (value.length > max) throw new Error("Research context exceeds the review budget. Split the research question; no partial audit is accepted.");
+  return value;
+}
+
+export function buildResearchAnalysisTask(run: ResearchRun, track: ResearchTrack, reports: string, evidence: ResearchEvidence[]): string {
+  return `${buildResearchTrackTask(run, track, "Use the collected source evidence below.")}\n\nCOLLECTED FINDINGS:\n${boundedResearchContext(reports, 70_000)}\n\nRECORDED EVIDENCE:\n${boundedResearchContext(JSON.stringify(evidence), 70_000)}\n\nAnalyze these inputs after collection. Show units, formulas, assumptions and reproducible calculations. Return the required track marker sections. Cite existing canonical IDs in findings; use T1, T2, etc. only for new evidence array items. Do not relabel an inference as a sourced fact.`;
 }
 
 export function buildResearchSynthesisTask(run: ResearchRun, trackReports: string, evidence: ResearchEvidence[]): string {
-  const evidenceJson = JSON.stringify(evidence.slice(0, 250), null, 2);
+  const evidenceJson = JSON.stringify(evidence, null, 2);
   return `Synthesize a decision-grade research report. Do not perform new research and do not invent missing evidence.
 
 QUESTION:
@@ -308,10 +315,10 @@ SCOPE:
 Mode ${run.mode}; depth ${run.depth}; as of ${run.asOf}; geography ${run.geography ?? "not constrained"}.
 
 TRACK REPORTS:
-${truncateForPrompt(trackReports, 70_000)}
+${boundedResearchContext(trackReports, 70_000)}
 
 CANONICAL EVIDENCE LEDGER:
-${truncateForPrompt(evidenceJson, 70_000)}
+${boundedResearchContext(evidenceJson, 70_000)}
 
 Rules:
 1. Cite every material current/numeric factual claim inline using canonical IDs like [E-001].
@@ -331,7 +338,7 @@ Return only a complete Markdown report with:
 ## Conflicts and evidence quality
 ## Recommendation
 ## Unknowns and field verification
-## Sources and evidence index
+Do not append a bibliography; the parent renders the canonical evidence index.
 `;
 }
 
@@ -342,10 +349,10 @@ RUN:
 ${JSON.stringify({ question: run.question, decision: run.decision, mode: run.mode, depth: run.depth, asOf: run.asOf, geography: run.geography }, null, 2)}
 
 REPORT:
-${truncateForPrompt(report, 70_000)}
+${boundedResearchContext(report, 70_000)}
 
 EVIDENCE:
-${truncateForPrompt(JSON.stringify(evidence.slice(0, 250), null, 2), 70_000)}
+${boundedResearchContext(JSON.stringify(evidence, null, 2), 70_000)}
 
 Return concise Markdown with:
 ## Verdict
@@ -359,7 +366,9 @@ End with exactly one marker: <research-audit status="pass"/>, <research-audit st
 }
 
 export function parseIndependentAuditStatus(output: string): "pass" | "warning" | "fail" | undefined {
-  return output.match(/<research-audit\s+status=["'](pass|warning|fail)["']\s*\/>/i)?.[1].toLowerCase() as "pass" | "warning" | "fail" | undefined;
+  const markers = [...output.matchAll(/<research-audit\s+status=["'](pass|warning|fail)["']\s*\/>/gi)];
+  if (markers.length !== 1 || !output.trimEnd().endsWith(markers[0][0])) return undefined;
+  return markers[0][1].toLowerCase() as "pass" | "warning" | "fail";
 }
 
 export function formatEvidenceIndex(evidence: ResearchEvidence[]): string {

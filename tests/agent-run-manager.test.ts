@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { AgentRunManager, buildAgentChildEnvironment, defaultAgentInvocation } from "../agent-run-manager.ts";
 import { AgentRunStore, digestAgentRunText } from "../agent-run-store.ts";
@@ -63,6 +64,22 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs = 2_000): Pr
 }
 
 describe("AgentRunManager", () => {
+  test("returns correlated native verification receipts and rejects changed or unmatched evidence", async () => {
+    for (const mode of ["check-valid", "check-tampered", "check-unmatched"]) {
+      const item = await setup(mode);
+      try {
+        execFileSync("git", ["init", "-q", item.project]);
+        await fs.writeFile(path.join(item.project, "source.txt"), "source");
+        const handle = await item.manager.start({ projectRoot: item.project, agent: { ...AGENT, allowBash: true }, systemPrompt: "Verify.", task: "Run checks." });
+        const result = await handle.completion;
+        if (mode === "check-valid") {
+          expect(result.exitCode).toBe(0);
+          expect(result.verification?.receipts).toHaveLength(1);
+          expect(result.verification?.receipts[0].snapshotAfter).toBe(result.verification?.snapshot);
+        } else expect(result.exitCode).not.toBe(0);
+      } finally { await item.manager.shutdown(); await fs.rm(item.root, { recursive: true, force: true }); }
+    }
+  });
   test("launches the Pi CLI instead of reusing arbitrary Node or Bun embedding scripts", () => {
     expect(defaultAgentInvocation(["--mode", "rpc"], "/usr/bin/node")).toEqual({ command: "pi", args: ["--mode", "rpc"] });
     expect(defaultAgentInvocation(["--mode", "rpc"], "/opt/homebrew/bin/bun")).toEqual({ command: "pi", args: ["--mode", "rpc"] });

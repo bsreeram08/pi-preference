@@ -119,8 +119,6 @@ function signal(text: string, medium: RegExp, high: RegExp): 0 | 1 | 2 {
 
 export function classifyRoutingSignals(task: string, role = ""): RoutingSignals {
   const text = `${task}\n${role}`;
-  const taskOnly = task.trim();
-  const lengthBreadth: 0 | 1 | 2 = taskOnly.length > 900 ? 2 : taskOnly.length > 320 ? 1 : 0;
   const roleUncertainty = /technical-reviewer|oracle|planner|requirements-analyst/i.test(role) ? 1 : 0;
   const roleVerification = /quality-reviewer|reviewer|implementer|worker/i.test(role) ? 1 : 0;
   return {
@@ -138,10 +136,7 @@ export function classifyRoutingSignals(task: string, role = ""): RoutingSignals 
       /\b(api|database|state|production|reliability|compatibility|breaking)\b/i,
       /\b(security|authentication|authorization|credential|destructive|data loss|payment|privacy|migration)\b/i,
     ),
-    breadth: Math.max(
-      lengthBreadth,
-      signal(text, /\b(several|multiple|cross-file|module|package)\b/i, /\b(cross-cutting|repository-wide|monorepo|across services|system-wide)\b/i),
-    ) as 0 | 1 | 2,
+    breadth: signal(text, /\b(several|multiple|cross-file|module|package)\b/i, /\b(cross-cutting|repository-wide|monorepo|across services|system-wide)\b/i),
     verificationCost: Math.max(
       roleVerification,
       signal(text, /\b(test|verify|review|typecheck|build)\b/i, /\b(integration test|end-to-end|e2e|full suite|independent verification)\b/i),

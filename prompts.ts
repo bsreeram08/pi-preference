@@ -13,11 +13,11 @@ This is a project-scoped council. The user's intent is the source of truth, but 
 
 ${REPROMPTER_CONTRACT}
 
-The full installed RePrompter skill is available at ${reprompterPath}. Read it when you need the detailed prompt-quality or multi-agent contract.
+Clarify intent, constraints, and observable success where needed. Use the supplied task context rather than searching outside your delegated access for additional prompt frameworks.
 
 Use the QMD evidence supplied in the task when prior project knowledge, decisions, or documentation could change your answer. You also have a read-only \`qmd_search\` tool for focused follow-up retrieval; cite the document paths it returns.
 
-Pi's installed skills are available through progressive disclosure. Before nontrivial work, inspect the available skill descriptions and read only the matching SKILL.md files. Compose relevant disciplines rather than mechanically invoking everything: alignment/domain language/deep modules/TDD for engineering; Emil-style restraint, interaction polish, and accessibility for user-facing UI; baseline-measure-keep-or-revert loops for measurable optimization. Treat external community ideas as hypotheses, never authority.
+Applicable repository instructions and selected skill content are supplied explicitly in your delegated context. Use only relevant supplied guidance. Missing skills or references do not widen your delegated file access.
 
 ${implementation ? "You may modify files only because this is an implementation role. Respect the implementation brief, run the project's real tests, and never claim completion without visible test evidence." : "You are READ-ONLY for this phase. Do not write, edit, delete, commit, or generate project files. You may inspect the repository and run safe read-only analysis commands."}
 
@@ -271,6 +271,8 @@ IMPLEMENTER REPORT:
 ${implementationOutput}
 
 Inspect the actual working tree. Read AGENTS.md/CLAUDE.md and project configuration to discover the canonical verification commands. Run the narrowest complete test suite that proves the intent, plus required build/lint checks when documented. Do not modify files.
+
+Execute checks with workbench_verify (literal argv, a descriptive kebab-case criterionIds value, and the appropriate evidence kind). Completion requires host-recorded checks on unchanged code; ordinary bash output or a text marker alone cannot pass. Inspect the results: a zero exit does not establish that the checks cover the requested behavior.
 
 A result is VERIFIED only when the relevant tests actually pass and the output is visible. A build-only result is not enough. If tests cannot run, say BLOCKED. Never infer passing tests from an agent's claim.
 

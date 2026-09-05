@@ -30,7 +30,7 @@ export function registerWorkbenchCases(pi: ExtensionAPI, dependencies: CaseDepen
   pi.on("before_agent_start", async (event, ctx) => {
     try {
       const store = await storeFor(ctx.cwd);
-      const l1 = renderCaseL1(await store.recall());
+      const l1 = renderCaseL1(await store.recall(event.prompt));
       if (!l1) return;
       return { systemPrompt: `${event.systemPrompt}\n\n${l1}` };
     } catch {

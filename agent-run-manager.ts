@@ -13,6 +13,8 @@ import { supportsFastModeRoute } from "./child-fast-mode.ts";
 import type { WorkbenchDashboardController } from "./dashboard-controller.ts";
 import { inspectProcessStart } from "./exclusive-lease.ts";
 import type { AgentResult, AgentSpec } from "./types.ts";
+import { validateCheckReceipt, validateCheckRequest, workspaceSnapshot, type CheckRequest, type CheckReceipt } from "./verification.ts";
+import { buildAgentContext } from "./agent-context.ts";
 
 const MAX_OUTPUT_BYTES = 50 * 1024;
 const CHILD_TOOLS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "child-tools.ts");
@@ -20,6 +22,7 @@ const CHILD_FAST_MODE_PATH = path.join(path.dirname(fileURLToPath(import.meta.ur
 const TRUSTED_CHILD_FILES = [
   "agent-child-bridge.ts", "agent-cmux-bridge.mjs", "agent-cmux-session.ts", "child-fast-mode.ts", "child-tools.ts",
   "memory-access.ts", "memory-store.ts", "memory.ts", "readonly-bash.ts", "research-tools.ts", "research-types.ts", "research-browser.mjs",
+  "verification.ts", "verification-tool.ts",
 ];
 const TERMINAL_STATUSES = new Set<AgentRunStatus>(["completed", "failed", "cancelled", "interrupted", "orphaned"]);
 const MAX_QUESTION_BYTES = 4_000;
@@ -35,6 +38,7 @@ export interface AgentRunContext {
   memoryProjectRoot?: string;
   budget?: { turns: number; tools: number };
   allowParentQuestions?: boolean;
+  contextTask?: string;
 }
 
 export interface AgentRunRequest {
@@ -117,6 +121,8 @@ interface ActiveRun {
   assistantTurns: number;
   toolCalls: number;
   synthesisQueued: boolean;
+  checkRequests: Map<string, CheckRequest>;
+  checkReceipts: Array<{ value: unknown; request: CheckRequest }>;
   readonly interactive: boolean;
   readonly routeModel?: string;
   terminationTimer?: NodeJS.Timeout;
@@ -179,7 +185,7 @@ function requestedTools(agent: AgentSpec): string[] {
   const tools = agent.readOnly
     ? ["read", "grep", "find", "ls", "qmd_search", "workbench_memory", ...researchTools, ...(agent.allowBash ? ["bash"] : [])]
     : ["read", "write", "edit", "grep", "find", "ls", "bash", "qmd_search", "workbench_memory", ...researchTools];
-  return [...new Set([...tools, "ask_parent"])];
+  return [...new Set([...tools, "ask_parent", ...(!agent.readOnly || agent.allowBash ? ["workbench_verify"] : [])])];
 }
 
 function signalProcessGroup(child: ChildProcessWithoutNullStreams | undefined, signal: NodeJS.Signals): void {
@@ -223,6 +229,7 @@ export function buildAgentChildEnvironment(
     PI_WORKBENCH_EXPECTED_MODEL: fields.expectedModel ?? "",
     PI_WORKBENCH_EXPECTED_THINKING: fields.expectedThinking ?? "",
     PI_WORKBENCH_READ_ONLY: fields.readOnly === true ? "1" : "0",
+    PI_WORKBENCH_EVIDENCE_DIR: path.join(paths.root, "checks"),
   };
   const term = source.TERM;
   if (term && /^[a-zA-Z0-9_.+-]{1,64}$/.test(term)) environment.TERM = term;
@@ -369,7 +376,12 @@ export class AgentRunManager {
     const requestedRunId = request.runId ?? request.runContext?.jobId ?? `agent-${request.agent.id}`;
     const runId = `${runIdPrefix(requestedRunId)}-${this.uuid()}`;
     const paths = await this.store.prepare(projectRoot, runId);
-    await this.store.writeSystemPrompt(paths, request.systemPrompt);
+    const context = await buildAgentContext({
+      projectRoot, role: request.agent.id, task: request.runContext?.contextTask ?? request.task,
+      agentDir: this.environment.PI_CODING_AGENT_DIR ?? getAgentDir(), home: this.environment.HOME ?? os.homedir(),
+    });
+    const systemPrompt = `${request.systemPrompt}\n\n${context}`;
+    await this.store.writeSystemPrompt(paths, systemPrompt);
     const tools = requestedTools(request.agent);
     const interactive = this.sessionHost?.interactive === true;
     const routeModel = request.agent.model ?? this.defaultModel;
@@ -391,7 +403,7 @@ export class AgentRunManager {
       updatedAt: timestamp,
       sequence: 0,
       taskDigest: digestAgentRunText(request.task),
-      systemPromptDigest: digestAgentRunText(request.systemPrompt),
+      systemPromptDigest: digestAgentRunText(systemPrompt),
       trustedCodeDigest: await trustedCodeDigest(),
       runtime: interactive ? "interactive-tui" : "headless-rpc",
       tools,
@@ -479,6 +491,7 @@ export class AgentRunManager {
       questionAdmissionLocked: false, answerInFlight: false, loadoutVerified: false, loadoutReady, resolveLoadout, rejectLoadout,
       promptAccepted: false, settledSeen: false, finalHandshakeDone: false, cancellationRequested: false,
       terminationRequested: false, closed: false, assistantTurns: 0, toolCalls: 0, synthesisQueued: false, interactive, routeModel,
+      checkRequests: new Map(), checkReceipts: [],
     };
     this.active.set(runId, active);
     child.stderr.on("data", (chunk: Buffer) => { active.stderr = boundedAppend(active.stderr, chunk.toString(), MAX_AGENT_RPC_STDERR_BYTES); });
@@ -757,6 +770,16 @@ export class AgentRunManager {
       const args = event.args && typeof event.args === "object" && !Array.isArray(event.args) ? event.args as Record<string, unknown> : {};
       const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
       const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : `${Date.now()}`;
+      if (toolName === "workbench_verify") {
+        try {
+          validateCheckRequest(args as unknown as CheckRequest);
+          if (!active.record.tools.includes(toolName) || active.checkRequests.has(toolCallId)) throw new Error("Unexpected or duplicate verification invocation.");
+          active.checkRequests.set(toolCallId, structuredClone(args) as unknown as CheckRequest);
+        } catch (error) {
+          this.onProtocolFailure(runId, new AgentRpcProtocolError("invalid_check", String(error)));
+          return;
+        }
+      }
       if (toolName === "ask_parent") {
         if (typeof event.toolCallId !== "string" || event.toolCallId.length < 1 || event.toolCallId.length > 256) {
           this.onProtocolFailure(runId, new AgentRpcProtocolError("invalid_question_tool_call", "ask_parent tool call identity is invalid."));
@@ -782,6 +805,18 @@ export class AgentRunManager {
     if (event.type === "tool_execution_end") {
       const toolCallId = String(event.toolCallId ?? "tool");
       const toolName = String(event.toolName ?? "tool");
+      if (toolName === "workbench_verify") {
+        const request = active.checkRequests.get(toolCallId);
+        active.checkRequests.delete(toolCallId);
+        if (!request) {
+          this.onProtocolFailure(runId, new AgentRpcProtocolError("unmatched_check", "Verification result has no matching invocation."));
+          return;
+        }
+        if (event.isError !== true) {
+          const result = event.result as { details?: { receipt?: unknown } } | undefined;
+          active.checkReceipts.push({ value: result?.details?.receipt, request });
+        }
+      }
       dashboard?.addTool(runId, { id: toolCallId, name: toolName, args: (event.args as Record<string, unknown>) ?? {}, output: extractToolText(event.result), isError: event.isError === true, finishedAt: Date.now() });
       if (active.currentAskToolCallId === toolCallId) {
         active.currentAskToolCallId = undefined;
@@ -990,6 +1025,20 @@ export class AgentRunManager {
       status = "completed";
     }
 
+    let verification: AgentResult["verification"];
+    if (status === "completed" && active.checkReceipts.length > 0) {
+      try {
+        if (active.checkRequests.size > 0) throw new Error("Verification commands have not settled.");
+        const receipts: CheckReceipt[] = [];
+        for (const { value, request } of active.checkReceipts) receipts.push(await validateCheckReceipt(value, request, {
+          projectRoot: active.request.projectRoot, evidenceDir: path.join(active.paths.root, "checks"), runId,
+        }));
+        verification = { receipts, snapshot: await workspaceSnapshot(active.request.projectRoot) };
+      } catch {
+        status = "failed";
+        errorCode = "invalid-check-evidence";
+      }
+    }
     const exactOutput = status === "completed"
       ? active.validatedFinalText!
       : active.validatedFinalText || active.latestAssistant || active.currentAssistant || active.stderr;
@@ -1012,6 +1061,7 @@ export class AgentRunManager {
       title: active.request.agent.title,
       output,
       exitCode: status === "completed" ? 0 : Math.max(1, code),
+      ...(verification ? { verification } : {}),
       ...(status === "cancelled" ? { cancelled: true } : {}),
       ...(status !== "completed" ? { error: terminalPersistenceError?.message || active.protocolFailure?.message || active.extensionFailure || active.budgetFailure || active.stderr || errorCode || "Agent run failed." } : {}),
     };

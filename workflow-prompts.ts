@@ -36,7 +36,7 @@ ${SHARED_WORKFLOW_RULES}
 
 ${access}
 
-The installed RePrompter guidance is available at ${reprompterPath}. Apply its intent, constraint, output, and observable-success discipline when the request is underspecified.
+When the request is underspecified, identify the desired behavior, constraints, and observable success before proceeding. Your delegated context supplies the applicable repository instructions and selected skills.
 
 ${formatConceptGuidance(task, agent.id, communityKnowledgePath)}
 
@@ -285,12 +285,9 @@ ${task}
 APPROVED PLAN:
 ${plan}
 ${packetBindingPrompt(packet)}
-IMPLEMENTER REPORT:
-${implementation}
-
 ${focus}
 
-Inspect the real diff and run safe checks when useful. Findings must name severity, path, evidence, and concrete fix. Return:
+Form your own assessment from the request, acceptance criteria, code, and tests. The implementer's self-assessment is deliberately omitted. Inspect the real diff and run safe checks when useful. Findings must name severity, path, evidence, and concrete fix. Return:
 ## Verdict
 ## Findings
 ## Verification Gaps
@@ -316,6 +313,8 @@ ${implementation}
 
 Inspect the real working tree and repository instructions. Run the narrowest complete set of canonical tests/checks that proves the requested behavior, including required build or lint checks when documented. A diff, type check alone, or another agent's test claim is not proof. If a relevant check fails, is skipped, or cannot run, verification fails.
 
+Run checks with workbench_verify using literal argv, a descriptive criterionIds value, and the appropriate evidence kind. Completion requires actual host-recorded checks on unchanged code. Ordinary bash output and text markers alone cannot pass the gate.
+
 Return exact commands with abbreviated results and end with exactly one marker:
 <verified/>
 or
@@ -335,6 +334,8 @@ IMPLEMENTER REPORT:
 ${implementation}
 
 Inspect the real working tree and repository instructions. Evaluate every acceptance criterion in packet order. Run the narrowest complete canonical checks needed for each required evidence kind. A diff, type check alone, or another agent's claim is not proof. If a relevant check fails, is skipped, or cannot run, mark that criterion failed or skipped.
+
+Use workbench_verify for every required evidence kind. Set criterionIds to the exact packet IDs this check supports, kind to the required evidence kind, and argv to the real project command. Artifact inspection and runtime observations also need an executed check that produces relevant evidence. Do not use shell commands merely printing a success claim. Plain bash results and model-authored evidence cannot pass the gate. Do not modify code during verification; any changed snapshot invalidates checks. Exit zero proves execution only: inspect the output and judge whether it actually establishes the criterion.
 
 Return only optional outer whitespace plus exactly one one-line marker and no prose, commands, logs, or legacy markers outside it:
 <workflow-verification>{"schemaVersion":1,"packetId":"${packet.packetId}","planDigest":"${packet.planDigest}","criteria":[{"criterionId":"criterion-id","status":"passed","evidence":[{"kind":"automated-test","summary":"Concise one-line result."}]}]}</workflow-verification>
@@ -437,12 +438,12 @@ export function parseCodeVerdict(output: string): CodeVerdict {
   return value === "PASS" ? "PASS" : value === "BLOCKED" ? "BLOCKED" : "CHANGES_REQUIRED";
 }
 
-export function planReviewsPass(results: AgentResult[]): boolean {
-  return results.length >= 2 && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parsePlanVerdict(result.output) === "OKAY");
+export function planReviewsPass(results: AgentResult[], required: 1 | 2 = 2): boolean {
+  return results.length >= required && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parsePlanVerdict(result.output) === "OKAY");
 }
 
-export function codeReviewsPass(results: AgentResult[]): boolean {
-  return results.length >= 2 && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parseCodeVerdict(result.output) === "PASS");
+export function codeReviewsPass(results: AgentResult[], required: 1 | 2 = 2): boolean {
+  return results.length >= required && results.every((result) => !result.cancelled && result.exitCode === 0 && result.output.trim() && parseCodeVerdict(result.output) === "PASS");
 }
 
 export function legacyVerificationPasses(output: string): boolean {

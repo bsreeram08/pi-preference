@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { observedChecks } from "./fixtures/check-evidence.ts";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,6 +24,8 @@ async function harness(
   options: { abortOnBegin?: boolean; blockLease?: boolean; beforeLeaseWork?: (root: string) => Promise<void> } = {},
 ): Promise<Harness> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "workflow-orchestration-"));
+  await fs.mkdir(path.join(root, ".pi", "pi-workbench"), { recursive: true });
+  await fs.writeFile(path.join(root, ".pi", "pi-workbench", "config.json"), '{"workflowMode":"thorough"}');
   const commands = new Map<string, (args: string, ctx: any) => Promise<void>>();
   const tools = new Map<string, any>();
   const reports: Array<{ title: string; body: string }> = [];
@@ -69,7 +72,8 @@ function context(
     cwd: root,
     hasUI: true,
     mode: "tui",
-    ui: { confirm, editor, setStatus() {} },
+    isProjectTrusted: () => true,
+    ui: { confirm, editor, notify() {}, setStatus() {} },
   };
 }
 
@@ -141,11 +145,66 @@ async function approvedPacketState(root: string, id = "approved-packet-plan"): P
 function executionResult(agent: AgentSpec, task: string, verifierOutput: string): AgentResult {
   if (agent.id === "execution-manager") return agentResult(agent, "## Blockers\nNone");
   if (agent.id === "implementer") return agentResult(agent, "Implementation complete.");
-  if (task.includes("independent completion gate")) return agentResult(agent, verifierOutput);
+  if (task.includes("independent completion gate")) return agentResult(agent, verifierOutput, { verification: observedChecks() });
   return agentResult(agent, "<code-verdict>PASS</code-verdict>");
 }
 
 describe("workflow orchestration fail-closed behavior", () => {
+  test("focused execution uses one implementer, one independent reviewer and an evidence gate", async () => {
+    let packet: WorkflowTaskPacket;
+    const roles: string[] = [];
+    const item = await harness(async (agent, _call, task) => {
+      roles.push(agent.id);
+      return executionResult(agent, task, packetVerification(packet));
+    });
+    try {
+      packet = await approvedPacketState(item.root, "focused-mode");
+      await item.commands.get("start-work")?.("", context(item.root));
+      expect(roles).toEqual(["implementer", "technical-reviewer", "quality-reviewer"]);
+      expect((await loadCurrentWorkflowPlan(getWorkflowPaths(path.join(item.root, ".pi", "pi-workbench"))))?.status).toBe("verified");
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+  test("a verifier's fabricated passing packet without native check receipts blocks completion", async () => {
+    let packet: WorkflowTaskPacket;
+    const item = await harness(async (agent, _call, task) => {
+      const result = executionResult(agent, task, packetVerification(packet));
+      delete result.verification;
+      return result;
+    });
+    try {
+      packet = await approvedPacketState(item.root, "missing-host-checks");
+      await item.commands.get("start-work")?.("", context(item.root));
+      const state = await loadCurrentWorkflowPlan(getWorkflowPaths(path.join(item.root, ".pi", "pi-workbench")));
+      expect(state?.status).toBe("blocked");
+      expect(state?.execution?.packetVerification).toMatchObject({ protocolFailure: "missing-host-evidence" });
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+  test("blocks delegate_task before project discovery when project resources are not trusted", async () => {
+    let launched = false;
+    const item = await harness(async (agent) => {
+      launched = true;
+      return agentResult(agent);
+    });
+    const notices: string[] = [];
+    const expected = "This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision, then restart pi.";
+    const result = await item.tools.get("delegate_task").execute(
+      "call",
+      { agent: "codebase-explorer", task: "Inspect the repository." },
+      undefined,
+      undefined,
+      {
+        cwd: item.root,
+        hasUI: true,
+        isProjectTrusted: () => false,
+        ui: { notify(message: string) { notices.push(message); } },
+      },
+    );
+    expect(result.content[0]?.text).toBe(expected);
+    expect(result.details.blocked).toBe(expected);
+    expect(notices).toEqual([expected]);
+    expect(launched).toBe(false);
+  });
+
   for (const scenario of [
     { name: "nonzero discovery", result: (agent: AgentSpec) => agentResult(agent, "failed", { exitCode: 1 }), status: "interrupted" },
     { name: "cancelled exit-zero discovery", result: (agent: AgentSpec) => agentResult(agent, "cancelled", { cancelled: true }), status: "cancelled" },
