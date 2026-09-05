@@ -8,6 +8,7 @@
 - Added a native animated workflow activity row with phase and elapsed time, cleanup on completion, and pauses for planning input.
 
 - Added `/plan --revise [feedback]` and the `revise plan` shorthand to preserve the current task, draft, and interview decisions before implementation. Failed revision discovery or clearance retains the draft. Later review rounds receive prior independent findings, and each reviewed draft is saved beside its review. Clearance failures report the validation reason and output artifact; blocked planning keeps a blocked lifecycle status.
+- Added child-context and workflow troubleshooting guides, including update-marker recovery boundaries and optional skill limits. Expanded manual testing with an aviation-themed 3D resume task, clarified non-Git verification scope, and labeled the runtime roadmap's historical baseline.
 
 - Fixed planning interruption on valid design skills above the repository-instruction size limit. Optional skills have separate per-file and aggregate budgets and are omitted with a reason if unavailable; mandatory repository instructions retain their strict checks.
 
