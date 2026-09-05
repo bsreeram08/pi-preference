@@ -28,6 +28,8 @@ Expect `Check exited zero on unchanged code`, an exit code of 0, a receipt ID, a
 
 For a timeout, request argv `["node", "-e", "setInterval(() => {}, 1000)"]` with `timeoutMs: 100`. Expect a non-passing, interrupted receipt. Do not use a successful smoke command as evidence that real acceptance criteria are met.
 
+Repeat the success/failure checks in a separate small directory with no Git repository in any parent. Verification should use the bounded filesystem snapshot there. Non-Git snapshots do not honor `.gitignore`, so avoid a large dependency tree for this smoke check. Broken Git metadata should produce an error, not silently switch to the non-Git path.
+
 ## Exercise a real focused workflow
 
 In the disposable Git project, use:
@@ -41,6 +43,31 @@ Review the plan and its acceptance criteria. Then run `/start-work` and accept t
 Run `/workflow-status` and inspect the reported artifact paths. Look for `checks-N.md` containing native receipts and the corresponding criterion assessment. Confirm that the recorded argv runs the actual tests, exit status is zero, and before/after fingerprints match. Run `node --test clamp.test.mjs` yourself and inspect the assertions. Completion should reflect supported acceptance criteria, not simply a model saying “passed.”
 
 The automated tests cover stale receipts and tampered artifacts. For a manual failure demonstration, ask the main Pi tool to run a deliberately failing test in the scratch project and confirm it produces a non-passing receipt. A full workflow may correctly repair a defect and pass later; inspect the final checks rather than expecting the entire workflow to remain failed.
+
+## Exercise design context with a 3D resume
+
+First run the context and launch regressions:
+
+```sh
+rtk proxy bun test tests/agent-context.test.ts tests/agent-run-manager.test.ts tests/workflow-orchestration.test.ts
+```
+
+These include a complete skill above 24,000 bytes, optional-file omissions, source precedence, and the combined budget. They establish loader behavior independently of a model run. See [Child instructions and skills](child-context.md) for the limits.
+
+For a live check, put a copy of `resume-data.json` in a disposable project, reload the updated Workbench, and use the following prompt. Treat the JSON as private input and review it before making the resulting site public.
+
+```text
+/plan Build an interactive 3D aviation-themed portfolio from resume-data.json. Inspect the JSON and existing app first. Treat the JSON as the source of truth: do not invent employers, dates, achievements, travel history, or locations. Use a small airplane and flight paths to navigate between career chapters; flight routes are a visual metaphor unless the data explicitly supports real locations. Keep resume content readable in accessible HTML alongside the 3D scene. Support keyboard navigation, mobile touch, reduced motion, and a useful fallback when WebGL is unavailable. Use emil-design-eng and animate guidance if installed and available to the assigned role. Propose the visual direction, dependencies, acceptance criteria, and concrete checks before implementation. Verify the build and key interactions, and inspect desktop and mobile rendering with browser tooling if available. Report any checks you cannot perform.
+```
+
+Review the plan, then run `/start-work`. Check two separate outcomes:
+
+- **Context and workflow:** planning launches without the former skill-size error. The child context identifies supplied skills and explains omissions. Check actual context/session artifacts rather than accepting a model's claim that it used a skill. Review `/workflow-status` and native check evidence.
+- **Finished product:** resume facts match the JSON, career sections are reachable with a keyboard, mobile text remains readable, reduced motion avoids unnecessary flight animation, and the fallback retains the resume. Inspect the actual rendered site and interactions; a successful build cannot establish visual quality or accessibility by itself.
+
+If browser tooling is unavailable, record visual and interaction checks as unverified and perform them manually. One attractive result does not establish that the harness improves model quality; use the repeated comparisons in [Harness evaluation](harness-evaluation.md).
+
+If planning fails before implementation, follow [Workflow troubleshooting](troubleshooting.md) before retrying. The update-marker error and the optional-skill loader error have separate causes.
 
 ## Research checks
 

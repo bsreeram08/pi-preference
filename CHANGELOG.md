@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added child-context and workflow troubleshooting guides, including update-marker recovery boundaries and optional skill limits. Expanded manual testing with an aviation-themed 3D resume task, clarified non-Git verification scope, and labeled the runtime roadmap's historical baseline.
+
 - Fixed planning interruption on valid design skills above the repository-instruction size limit. Optional skills have separate per-file and aggregate budgets and are omitted with a reason if unavailable; mandatory repository instructions retain their strict checks.
 
 - Addressed review feedback: support native verification in non-Git projects, supply implementation skills to the integration implementer, and restore generic market-research classification.
