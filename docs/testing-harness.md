@@ -36,7 +36,9 @@ In the disposable Git project, use:
 /plan Add clamp(value, min, max) in clamp.mjs and Node built-in tests in clamp.test.mjs. Clamp finite numbers to inclusive bounds; preserve values already within bounds; throw RangeError when min exceeds max. Cover each behavior. No dependencies or network access are needed. Verify with node --test clamp.test.mjs.
 ```
 
-Review the plan and its acceptance criteria. Then run `/start-work` and accept the execution confirmation. With the default `workflowMode: "focused"`, execution should show an implementer, one independent technical reviewer, and a separate verifier; discovery and planning may have their own agents, and failed checks can cause repair rounds.
+Main Pi should inspect the project and explain its decisions, using specialists as needed. It submits its plan through `workbench_plan`; independent findings return to Main Pi for correction. Review the plan and approve it through the native confirmation. Then run `/start-work` and accept the execution confirmation. With the default `workflowMode: "focused"`, execution should show an implementer, one independent technical reviewer, and a separate verifier; failed checks can cause repair rounds. See [Coordinator planning](coordinator-planning.md) for exact-model and activity-indicator checks.
+
+Main Pi must remain involved between those stages: choose a bounded assignment and explicit implementation model, inspect actual changes, and resolve findings before directing another slice or repair. Native verification returns to Main Pi before completion. `/start-work --pipeline` exercises the older automatic chain explicitly. Changing a source file after a passing gate must prevent Coordinator completion until verification runs again.
 
 Run `/workflow-status` and inspect the reported artifact paths. Look for `checks-N.md` containing native receipts and the corresponding criterion assessment. Confirm that the recorded argv runs the actual tests, exit status is zero, and before/after fingerprints match. Run `node --test clamp.test.mjs` yourself and inspect the assertions. Completion should reflect supported acceptance criteria, not simply a model saying “passed.”
 
@@ -44,7 +46,7 @@ The automated tests cover stale receipts and tampered artifacts. For a manual fa
 
 ## Revise a blocked plan
 
-Before implementation starts, use `/plan --revise <specific feedback>` to revise the current plan. Confirm that the dialog names the original task and prior plan ID. The new attempt retains the draft and interview decisions, refreshes repository discovery, and still requires independent review and approval. `/plan revise plan` is also recognized. A failed discovery or malformed clearance must not replace a carried-forward draft with a generic error stub.
+Before implementation starts, use `/plan --revise <specific feedback>` to revise the current plan. Confirm the Main Pi handoff retains the original task, draft, and prior decisions. The new attempt still requires independent review and approval. `/plan revise plan` is also recognized. To exercise the automatic discovery and clearance sequence explicitly, use `/plan --pipeline --revise <feedback>`; failed discovery or malformed clearance must not replace a carried-forward draft with a generic error stub.
 
 Review artifacts pair `plan-draft-N.md` with `plan-review-N.md`, so each round's input can be compared with its findings. Later reviewers and revisions receive earlier independent findings; reviewers should mark resolved, remaining, and new issues rather than repeatedly treating the plan as a first draft. This is context continuity, not proof that the model will converge or produce better output.
 

@@ -8,6 +8,7 @@ import {
   formatWorkflowRoster,
   getWorkflowAgentProfile,
   resolveWorkflowAgent,
+  requireAvailableDelegationModel,
   selectPlanningDiscoveryAgentIds,
   validateParallelWorkflowAgents,
   type WorkflowAgentId,
@@ -71,6 +72,9 @@ import { createWorkflowLifecycleEvent, WORKFLOW_LIFECYCLE_EVENT, type WorkflowLi
 import { MODEL_ROUTING_RECEIPT_ENTRY } from "./model-routing.ts";
 import type { AgentResult, Exec } from "./types.ts";
 import { checkPassed } from "./verification.ts";
+import { registerCoordinatorPlanning } from "./coordinator-planning.ts";
+import { registerCoordinatorExecution } from "./coordinator-execution.ts";
+import { startWorkflowActivity } from "./workflow-activity.ts";
 import { formatAgentResults } from "./prompts.ts";
 import {
   formatRoutingReceipt,
@@ -96,6 +100,7 @@ type WorkbenchTaskScope = "plan" | "execution" | "autopilot" | "delegate";
 
 interface Progress {
   update(message: string): void;
+  pause(): void;
   finish(state: Exclude<WorkbenchTaskState, "running">, detail: string): void;
   clear(): void;
 }
@@ -121,6 +126,7 @@ const TaskItemSchema = Type.Object({
   agent: StringEnum(WORKFLOW_AGENT_IDS, { description: "Specialized workflow agent" }),
   task: Type.String({ description: "Focused task with expected output and success criteria" }),
   effort: Type.Optional(RoutingEffortSchema),
+  model: Type.Optional(Type.String({ description: "Exact provider/model[:thinking] for this lane; overrides routing without fallback" })),
 });
 
 function now(): string {
@@ -135,6 +141,7 @@ function progressFor(
   scope: WorkbenchTaskScope,
   emitEvents = true,
 ): Progress {
+  let activity: ReturnType<typeof startWorkflowActivity> | undefined = startWorkflowActivity(ctx, `${title}: starting`);
   const phase: WorkflowLifecyclePhase = scope === "plan" ? "planning" : scope === "delegate" ? "delegation" : "execution";
   let terminal = false;
   const emit = (state: WorkbenchTaskState): void => {
@@ -148,15 +155,20 @@ function progressFor(
   };
   return {
     update(message) {
+      if (!activity) activity = startWorkflowActivity(ctx, `${title}: ${message}`);
+      else activity.update(`${title}: ${message}`);
       if (ctx.hasUI) ctx.ui.setStatus("workflow", `${title}: ${message}`);
       emit("running");
     },
+    pause() { activity?.stop(); activity = undefined; },
     finish(state, _detail) {
       if (terminal) return;
       terminal = true;
+      activity?.stop();
       emit(state);
     },
     clear() {
+      activity?.stop();
       if (ctx.hasUI) ctx.ui.setStatus("workflow", undefined);
     },
   };
@@ -247,6 +259,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     signal?: AbortSignal,
     effort: RoutingEffort = "auto",
     validateResult = true,
+    model?: string,
   ): Promise<AgentResult> {
     throwIfWorkflowCancelled(signal);
     const base = getWorkflowAgentProfile(role);
@@ -257,8 +270,9 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       effort,
       policy: getRoutingState(),
       readOnly: base.readOnly,
+      model,
     });
-    const agent = resolveWorkflowAgent(role, config, userTask, effort, getRoutingState());
+    const agent = resolveWorkflowAgent(role, config, userTask, effort, getRoutingState(), model);
     if (!agent) throw new Error(`Unknown workflow agent: ${role}`);
     const receipt = formatRoutingReceipt(agent.title, route);
     pi.appendEntry(MODEL_ROUTING_RECEIPT_ENTRY, { content: receipt });
@@ -290,7 +304,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   async function runRoleBatch(
     root: string,
     config: WorkbenchConfig,
-    tasks: Array<{ role: WorkflowAgentId; task: string; effort?: RoutingEffort }>,
+    tasks: Array<{ role: WorkflowAgentId; task: string; effort?: RoutingEffort; model?: string }>,
     userTask: string,
     progress: Progress,
     groupId: string,
@@ -308,7 +322,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     });
     const parallelError = tasks.length > 1 ? validateParallelWorkflowAgents(profiles) : undefined;
     if (parallelError) throw new Error(parallelError);
-    const results = await Promise.all(tasks.map(({ role, task, effort }, index) => runRole(
+    const results = await Promise.all(tasks.map(({ role, task, effort, model }, index) => runRole(
       root,
       config,
       role,
@@ -321,6 +335,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       signal,
       effort,
       false,
+      model,
     )));
     throwIfWorkflowCancelled(signal);
     return assertMandatoryAgentBatch(results, groupTitle);
@@ -335,13 +350,14 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     round: number | string,
     signal?: AbortSignal,
     reviewHistory = "",
+    model?: string,
   ): Promise<AgentResult[]> {
     const roles = reviewRoles(config);
     progress.update(`plan review ${round}: ${roles.join(", ")}`);
     return runRoleBatch(
       root,
       config,
-      roles.map((role) => ({ role, task: buildPlanReviewTask(role, task, plan, reviewHistory) })),
+      roles.map((role) => ({ role, task: buildPlanReviewTask(role, task, plan, reviewHistory), model })),
       task,
       progress,
       `plan-review-${round}`,
@@ -424,6 +440,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         return { state, cancelled: false, executable: false };
       }
       if (round >= config.workflowMaxInterviewRounds) break;
+      progress.pause();
       const answer = await ctx.ui.editor(
         `Planner interview — round ${round + 1}`,
         `${clearance.questions.map((question, index) => `${index + 1}. ${question}`).join("\n")}\n\nWrite your answers below:\n`,
@@ -439,6 +456,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     }
 
     if (!clearance.ready) {
+      progress.pause();
       const proceed = await ctx.ui.confirm(
         "Planner still sees unresolved decisions",
         "Continue by recording them as explicit assumptions? Quality Reviewer and Technical Reviewer will independently review the resulting plan.",
@@ -563,6 +581,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       return { state, cancelled: false, executable: true };
     }
 
+    progress.pause();
     const edited = await ctx.ui.editor("Review implementation plan", plan);
     if (edited === undefined) {
       state.status = "cancelled";
@@ -605,6 +624,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       plan = editedPlan;
     }
 
+    progress.pause();
     const approved = await ctx.ui.confirm(
       "Approve this workflow plan?",
       "Approval makes it executable by /start-work. Source files have not been changed yet.",
@@ -791,6 +811,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   }
 
   async function runPlanningCommand(rawArgs: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (!/^--pipeline(?:\s|$)/i.test(rawArgs.trim())) return startCoordinatorPlanning(rawArgs, ctx);
+    rawArgs = rawArgs.trim().replace(/^--pipeline\s*/i, "");
     const trustRequired = guardSubagentLaunch(ctx);
     if (trustRequired) {
       report("Project trust required", trustRequired);
@@ -862,6 +884,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   }
 
   async function runStartWorkCommand(_rawArgs: string, ctx: ExtensionCommandContext): Promise<void> {
+    if (!/^--pipeline(?:\s|$)/i.test(_rawArgs.trim())) return startCoordinatorExecution(_rawArgs, ctx);
     const trustRequired = guardSubagentLaunch(ctx);
     if (trustRequired) {
       report("Project trust required", trustRequired);
@@ -985,6 +1008,52 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     }
   }
 
+  const startCoordinatorPlanning = registerCoordinatorPlanning(pi, {
+    resolveProject,
+    withLease,
+    report,
+    async review(project, state, history, signal, ctx, model) {
+      const ownsRun = !dashboard.state.currentRunId;
+      if (ownsRun) dashboard.beginRun(`coordinator-review-${Date.now()}`);
+      const progress = progressFor(pi, ctx, "Coordinator", state.task, "plan", false);
+      try {
+        return await reviewPlan(project.root, project.config, state.task, state.plan, progress, state.reviewRounds, signal, history, model);
+      } finally {
+        progress.clear();
+        if (ownsRun) dashboard.endRun();
+      }
+    },
+  });
+
+  async function coordinatorRole<T>(state: WorkflowPlanState, ctx: ExtensionContext, work: (progress: Progress) => Promise<T>): Promise<T> {
+    const ownsRun = !dashboard.state.currentRunId;
+    if (ownsRun) dashboard.beginRun(`coordinator-execute-${Date.now()}`);
+    const progress = progressFor(pi, ctx, "Coordinator", state.task, "execution", false);
+    try { return await work(progress); }
+    finally { progress.clear(); if (ownsRun) dashboard.endRun(); }
+  }
+  const startCoordinatorExecution = registerCoordinatorExecution(pi, {
+    resolveProject, withLease, report,
+    implement(project, state, task, model, signal, ctx) {
+      return coordinatorRole(state, ctx, (progress) => runRole(
+        project.root, project.config, "implementer", state.task,
+        buildImplementationTask(state.task, state.plan, `Main Pi's bounded assignment:\n${task}\nDo only this slice; return evidence and open questions to Main Pi.`, state.packet),
+        progress, "coordinator-implementation", "Implementation", agentJobId("coordinator", "implementer", Date.now()), signal, "auto", true, model,
+      ));
+    },
+    verify(project, state, assessment, model, signal, ctx) {
+      return coordinatorRole(state, ctx, async (progress) => {
+        const reviews = await runRoleBatch(project.root, project.config,
+          reviewRoles(project.config).map((role) => ({ role, task: buildCodeReviewTask(role, state.task, state.plan, "", state.packet), model })),
+          state.task, progress, "coordinator-review", "Independent review", signal);
+        const verification = await runRole(project.root, project.config, "quality-reviewer", state.task,
+          state.packet ? buildPacketVerificationTask(state.task, state.plan, "", state.packet) : buildIndependentVerificationTask(state.task, state.plan, ""),
+          progress, "coordinator-verification", "Native verification", agentJobId("coordinator", "verification", Date.now()), signal);
+        return { reviews, verification };
+      });
+    },
+  });
+
   pi.registerTool({
     name: "delegate_task",
     label: "Delegate Task",
@@ -994,12 +1063,14 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       "Use delegate_task when isolated specialist context or independent parallel analysis materially improves a complex task; keep simple work in the main Pi agent.",
       "Main Pi acts as Coordinator: delegate bounded outcomes with context and success criteria, then verify returned claims against the actual project.",
       "Before delegating, classify every lane from complexity, uncertainty, risk, breadth, and verification cost. Role is only a prior: hard scout/recon work may require Sol. Set effort explicitly when you have made that judgment; otherwise use auto.",
+      "Honor a requested model with the model parameter, for example openai-codex/gpt-6-astra:high. This overrides session routing for that delegation only; effort still controls its work budget. Unavailable models fail without substitution.",
       "Show the pre-launch route receipt. Never use Spark for visual/image work. Never run Implementer or Task Implementer in a parallel delegate_task batch or hard-cap mutation-capable work.",
     ],
     parameters: Type.Object({
       agent: Type.Optional(StringEnum(WORKFLOW_AGENT_IDS, { description: "Agent for single delegation" })),
       task: Type.Optional(Type.String({ description: "Task for single delegation" })),
       effort: Type.Optional(RoutingEffortSchema),
+      model: Type.Optional(Type.String({ description: "Exact provider/model[:thinking] for single delegation, e.g. openai-codex/gpt-6-astra:high" })),
       tasks: Type.Optional(Type.Array(TaskItemSchema, { minItems: 1, maxItems: 6, description: "Read-only tasks to run in parallel" })),
     }),
     async execute(_toolCallId, params, signal, onUpdate, ctx): Promise<AgentToolResult<DelegationToolDetails>> {
@@ -1013,6 +1084,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           details: { mode: hasParallel ? "parallel" : "single", results: [], routes: [], blocked: trustRequired },
         };
       }
+      if (hasParallel && params.model !== undefined) throw new Error("For parallel delegation, set model on each tasks[] entry.");
+      for (const item of params.tasks ?? [{ model: params.model }]) requireAvailableDelegationModel(ctx, item.model);
       const project = await resolveProject(ctx);
       const ownsRun = !dashboard.state.currentRunId;
       if (ownsRun) dashboard.beginRun(`workflow-tool-${Date.now()}`);
@@ -1025,7 +1098,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           if (safetyError) throw new Error(safetyError);
           const routes = params.tasks.map((item) => {
             const profile = getWorkflowAgentProfile(item.agent)!;
-            const route = routeTask({ task: item.task, role: item.agent, effort: item.effort ?? "auto", policy: getRoutingState(), readOnly: profile.readOnly });
+            const route = routeTask({ task: item.task, role: item.agent, effort: item.effort ?? "auto", policy: getRoutingState(), readOnly: profile.readOnly, model: item.model });
             return { role: item.agent, route, receipt: formatRoutingReceipt(profile.title, route) };
           });
           onUpdate?.({
@@ -1035,7 +1108,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           const results = await runRoleBatch(
             project.root,
             project.config,
-            params.tasks.map((item) => ({ role: item.agent, task: item.task, effort: item.effort })),
+            params.tasks.map((item) => ({ role: item.agent, task: item.task, effort: item.effort, model: item.model })),
             params.tasks.map((item) => item.task).join("\n"),
             progress,
             `tool-parallel-${Date.now()}`,
@@ -1056,7 +1129,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           const confirmed = await ctx.ui.confirm(`Run ${profile.title}?`, "This specialist can modify the current working tree. It will run alone under the project writer lease.");
           if (!confirmed) throw new Error("Write-capable delegation was not approved.");
         }
-        const route = routeTask({ task, role, effort: params.effort ?? "auto", policy: getRoutingState(), readOnly: profile.readOnly });
+        const route = routeTask({ task, role, effort: params.effort ?? "auto", policy: getRoutingState(), readOnly: profile.readOnly, model: params.model });
         const routes = [{ role, route, receipt: formatRoutingReceipt(profile.title, route) }];
         onUpdate?.({
           content: [{ type: "text", text: "Delegation in progress." }],
@@ -1074,6 +1147,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
           agentJobId("tool", role, Date.now()),
           signal,
           params.effort ?? "auto",
+          true,
+          params.model,
         );
         const result = profile.readOnly ? await launch() : await withLease(project.root, "delegate-task", launch);
         return { content: [{ type: "text", text: renderAgentResult(result) }], details: { mode: "single", results: [result], routes } };
@@ -1175,12 +1250,12 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   });
 
   pi.registerCommand("plan", {
-    description: "Produce a reviewed plan; --revise [feedback] carries forward the current task and draft without changing source files",
+    description: "Main Pi directs planning with native review tools; --revise keeps the draft, --pipeline uses automatic stages",
     handler: runPlanningCommand,
   });
 
   pi.registerCommand("start-work", {
-    description: "Execute the current approved plan through execution management, implementation, review, and verification",
+    description: "Main Pi directs approved implementation and native verification; --pipeline uses automatic stages",
     handler: runStartWorkCommand,
   });
 

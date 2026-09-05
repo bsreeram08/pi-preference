@@ -150,7 +150,10 @@ ${previousPlan ? `PREVIOUS PLAN TO REVISE:\n${previousPlan}\n\nPreserve valid de
 
 Resolve consequential scope, data ownership, interfaces, failure behavior, and verification decisions. Leave routine implementation details to a competent implementer. Every step must name verified paths or an explicit discovery action, describe behavior and failure handling, state dependencies, and include observable completion checks. When promising complete coverage of structured input, define which fields are rendered, hidden, or metadata and how that policy is tested.
 
-Return only the plan in Markdown with:
+${WORKFLOW_PLAN_FORMAT}`;
+}
+
+export const WORKFLOW_PLAN_FORMAT = `The plan document must use Markdown with:
 # Plan: <short title>
 ## Objective
 ## Scope
@@ -167,7 +170,6 @@ End the trimmed plan with exactly one canonical one-line marker and no text afte
 <workflow-task-packet>{"schemaVersion":1,"scope":["..."],"nonGoals":["..."],"acceptanceCriteria":[{"id":"kebab-case-id","description":"...","requiredEvidenceKinds":["automated-test"]}]}</workflow-task-packet>
 
 Marker rules: exact field order shown; scope and nonGoals each contain 1-16 unique trimmed one-line strings of at most 300 UTF-8 bytes; acceptanceCriteria contains 1-16 entries in verification order. Every criterion has exactly id, description, requiredEvidenceKinds in that order. IDs are unique kebab-case strings starting with a letter and at most 64 bytes; descriptions are trimmed one-line strings at most 500 bytes; requiredEvidenceKinds contains 1-5 unique values from automated-test, static-analysis, build, runtime-observation, artifact-inspection. Text must not contain control characters, U+2028, U+2029, or unpaired surrogates. The marker JSON must be canonical compact JSON with no duplicate, reordered, or unknown fields. Never include commands or executable orchestration in the packet. The Markdown plan may still name project verification command guidance.`;
-}
 
 export function buildPlanReviewTask(
   role: "quality-reviewer" | "technical-reviewer",
