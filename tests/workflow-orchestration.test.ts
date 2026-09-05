@@ -299,6 +299,167 @@ describe("workflow task packet command seams", () => {
     return agentResult(agent, "Repository evidence.");
   }
 
+  test("plan review rounds retain prior findings and the exact drafts reviewed", async () => {
+    const reviewTasks: string[] = [];
+    const revisionTasks: string[] = [];
+    const drafts = [0, 1, 2].map((n) => packetPlan().replace("Implement.", `Implement revision ${n}.`));
+    const item = await harness(async (agent, _call, task) => {
+      if (task.includes("Review this implementation plan")) {
+        reviewTasks.push(task);
+        return agentResult(agent, reviewTasks.length === 1
+          ? "Missing field policy: FIELD_POLICY_FINDING\n<plan-verdict>REJECT</plan-verdict>"
+          : reviewTasks.length === 2
+            ? "Field policy resolved; renderer failure: SCENE_HOST_FINDING\n<plan-verdict>REJECT</plan-verdict>"
+            : "<plan-verdict>OKAY</plan-verdict>");
+      }
+      if (task.includes("Revise the plan")) {
+        revisionTasks.push(task);
+        return agentResult(agent, drafts[revisionTasks.length]);
+      }
+      return planningResult(agent, task, drafts[0]);
+    });
+    try {
+      await fs.writeFile(path.join(item.root, ".pi/pi-workbench/config.json"), '{"workflowMode":"focused"}');
+      await item.commands.get("plan")?.("Build a visual resume", context(item.root, async () => true, async (_title, initial) => initial));
+      expect(reviewTasks).toHaveLength(3);
+      expect(reviewTasks[1]).toContain("FIELD_POLICY_FINDING");
+      expect(reviewTasks[2]).toContain("FIELD_POLICY_FINDING");
+      expect(reviewTasks[2]).toContain("SCENE_HOST_FINDING");
+      expect(revisionTasks[1]).toContain("FIELD_POLICY_FINDING");
+      expect(revisionTasks[1]).toContain("SCENE_HOST_FINDING");
+      const paths = getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"));
+      const state = await loadCurrentWorkflowPlan(paths);
+      expect(state?.status).toBe("approved");
+      for (let n = 0; n < drafts.length; n++) {
+        expect((await fs.readFile(path.join(paths.runs, state!.id, `plan-draft-${n + 1}.md`), "utf8")).trimEnd()).toBe(drafts[n]);
+      }
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
+  for (const request of ["--revise Include a complete field policy", "revise plan"]) {
+    test(`/plan ${request} carries forward the authoritative task and draft`, async () => {
+      const tasks: string[] = [];
+      const item = await harness(async (agent, _call, task) => {
+        tasks.push(task);
+        return planningResult(agent, task);
+      });
+      try {
+        const paths = getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"));
+        await approvedState(item.root, "prior-plan", "Build an aviation resume from resume-data.json");
+        const previous = (await loadCurrentWorkflowPlan(paths))!;
+        previous.status = "blocked";
+        previous.plan = packetPlan().replace("Implement.", "PRESERVED_SCENE_DESIGN");
+        previous.interviewNotes = "PRESERVED_USER_DECISION";
+        await saveWorkflowPlan(paths, previous);
+        await item.commands.get("plan")?.(request, context(item.root, async () => true, async (_title, initial) => initial));
+        const current = (await loadCurrentWorkflowPlan(paths))!;
+        expect(current.task).toBe(previous.task);
+        expect(current.id).not.toBe(previous.id);
+        expect(tasks.find((task) => task.includes("Create a decision-complete implementation plan"))).toContain("PRESERVED_SCENE_DESIGN");
+        expect(tasks.find((task) => task.includes("Create a decision-complete implementation plan"))).toContain("PRESERVED_USER_DECISION");
+        if (request.startsWith("--revise")) expect(tasks.join("\n")).toContain("Include a complete field policy");
+        expect(current.status).toBe("approved");
+      } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+    });
+  }
+
+  test("a valid not-ready clearance opens the interview instead of blocking as malformed", async () => {
+    let clearances = 0;
+    let interviews = 0;
+    const item = await harness(async (agent, _call, task) => {
+      if (task.includes("Assess whether this task is clear enough") && ++clearances === 1) {
+        return agentResult(agent, 'The task is not clear enough.\n\n<clearance>{"ready":false,"questions":["What specific plan should be revised, and what behavior or outcome should the implementation deliver (for example, a 3D interactive resume)?","Which framework/rendering/hosting constraints, if any, must the plan follow?","What are the required acceptance criteria for responsive, accessible, reduced-motion, fallback, and project-filtering behavior?"] ,"assumptions":[]}</clearance>');
+      }
+      return planningResult(agent, task);
+    });
+    try {
+      await item.commands.get("plan")?.("Build an aviation resume", context(item.root, async () => true, async (title, initial) => {
+        if (title.startsWith("Planner interview")) { interviews++; return "Use the JSON and accessible HTML fallback."; }
+        return initial;
+      }));
+      expect(interviews).toBe(1);
+      expect(clearances).toBe(2);
+      expect((await loadCurrentWorkflowPlan(getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"))))?.status).toBe("approved");
+      expect(item.reports.some((report) => report.body.includes("could not be validated"))).toBe(false);
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
+  test("failed revision clearance preserves the prior draft and reports its validation reason", async () => {
+    const item = await harness(async (agent, _call, task) => task.includes("Assess whether this task is clear enough")
+      ? agentResult(agent, '<clearance>{"ready":"false","questions":[],"assumptions":[]}</clearance>')
+      : planningResult(agent, task));
+    try {
+      const paths = getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"));
+      await approvedState(item.root, "prior-plan", "Original scope");
+      const before = (await loadCurrentWorkflowPlan(paths))!;
+      await item.commands.get("plan")?.("--revise", context(item.root));
+      const after = (await loadCurrentWorkflowPlan(paths))!;
+      expect(after.plan).toBe(before.plan);
+      expect(after.task).toBe(before.task);
+      expect(after.status).toBe("blocked");
+      expect(after.packet).toBeUndefined();
+      expect(item.reports.some((report) => report.body.includes("ready must be a boolean") && report.body.includes("clearance-1.md"))).toBe(true);
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
+  test("revision without a plan launches nothing", async () => {
+    let calls = 0;
+    const item = await harness(async (agent) => { calls++; return agentResult(agent); });
+    try {
+      await item.commands.get("plan")?.("--revise", context(item.root));
+      expect(calls).toBe(0);
+      expect(await loadCurrentWorkflowPlan(getWorkflowPaths(path.join(item.root, ".pi/pi-workbench")))).toBeUndefined();
+      expect(item.reports.at(-1)?.title).toBe("Workflow revision unavailable");
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
+  test("a revision interrupted during discovery retains the prior draft", async () => {
+    const item = await harness(async (agent) => agentResult(agent, "Inspection failed", { exitCode: 1 }));
+    try {
+      const paths = getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"));
+      await approvedState(item.root, "prior-plan", "Original scope");
+      const before = (await loadCurrentWorkflowPlan(paths))!;
+      await item.commands.get("plan")?.("--revise", context(item.root));
+      const after = (await loadCurrentWorkflowPlan(paths))!;
+      expect(after.plan).toBe(before.plan);
+      expect(after.task).toBe(before.task);
+      expect(after.status).toBe("interrupted");
+      expect(after.packet).toBeUndefined();
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
+  test("revision cannot replace a plan whose implementation has started", async () => {
+    let calls = 0;
+    const item = await harness(async (agent) => { calls++; return agentResult(agent); });
+    try {
+      const paths = getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"));
+      await approvedState(item.root, "prior-plan", "Original scope");
+      const previous = (await loadCurrentWorkflowPlan(paths))!;
+      previous.status = "blocked";
+      previous.execution = { startedAt: previous.createdAt, completedAt: previous.createdAt, attempts: 1, verificationPassed: false };
+      await saveWorkflowPlan(paths, previous);
+      await item.commands.get("plan")?.("--revise", context(item.root));
+      expect(calls).toBe(0);
+      expect(await loadCurrentWorkflowPlan(paths)).toEqual(previous);
+      expect(item.reports.at(-1)?.title).toBe("Workflow revision unavailable");
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
+  test("revision revalidates authority after confirmation before carrying forward context", async () => {
+    let calls = 0;
+    const item = await harness(async (agent) => { calls++; return agentResult(agent); });
+    try {
+      await approvedState(item.root, "prior-plan", "Original scope");
+      await item.commands.get("plan")?.("--revise", context(item.root, async () => {
+        await approvedState(item.root, "replacement-plan", "Replacement scope");
+        return true;
+      }));
+      expect(calls).toBe(0);
+      expect((await loadCurrentWorkflowPlan(getWorkflowPaths(path.join(item.root, ".pi/pi-workbench"))))?.task).toBe("Replacement scope");
+      expect(item.reports.at(-1)?.title).toBe("Workflow state changed");
+    } finally { await fs.rm(item.root, { recursive: true, force: true }); }
+  });
+
   test("/plan persists a packet only when the independently reviewed plan is approved", async () => {
     for (const approve of [false, true]) {
       const testHarness = await harness(async (agent, _call, task) => planningResult(agent, task));

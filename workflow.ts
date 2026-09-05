@@ -29,7 +29,7 @@ import {
   buildPlanRevisionTask,
   buildPlannerTask,
   codeReviewsPass,
-  parsePlanningClearance,
+  inspectPlanningClearance,
   planReviewsPass,
   legacyVerificationPasses,
   type PlanningClearance,
@@ -334,13 +334,14 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     progress: Progress,
     round: number | string,
     signal?: AbortSignal,
+    reviewHistory = "",
   ): Promise<AgentResult[]> {
     const roles = reviewRoles(config);
     progress.update(`plan review ${round}: ${roles.join(", ")}`);
     return runRoleBatch(
       root,
       config,
-      roles.map((role) => ({ role, task: buildPlanReviewTask(role, task, plan) })),
+      roles.map((role) => ({ role, task: buildPlanReviewTask(role, task, plan, reviewHistory) })),
       task,
       progress,
       `plan-review-${round}`,
@@ -356,12 +357,15 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     task: string,
     ctx: ExtensionCommandContext,
     progress: Progress,
-    options: { autonomous: boolean; autoApprove: boolean },
+    options: { autonomous: boolean; autoApprove: boolean; revision?: { previous: WorkflowPlanState; feedback: string } },
     signal?: AbortSignal,
   ): Promise<PlanningResult> {
     const workflowPaths = getWorkflowPaths(projectPaths.stateDir);
     const id = createWorkflowPlanId(task);
-    let state = createPlanState(id, task, "# Planning in progress", "");
+    let interviewNotes = options.revision
+      ? [options.revision.previous.interviewNotes, `Revision of plan ${options.revision.previous.id}.\nUSER REVISION REQUEST:\n${options.revision.feedback || "Resolve the remaining material blockers while preserving the original task."}`].filter(Boolean).join("\n\n")
+      : "";
+    let state = createPlanState(id, task, options.revision?.previous.plan ?? "# Planning in progress", interviewNotes);
     await saveWorkflowPlan(workflowPaths, state);
     throwIfWorkflowCancelled(signal);
     const discoveryRoles = selectPlanningDiscoveryAgentIds(task);
@@ -380,7 +384,6 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     const discovery = formatAgentResults(discoveryResults);
     await writeWorkflowRunArtifact(workflowPaths, id, "discovery.md", discovery);
 
-    let interviewNotes = "";
     let clearance: PlanningClearance = { ready: false, questions: [], assumptions: [] };
     for (let round = 0; round <= config.workflowMaxInterviewRounds; round++) {
       progress.update(`Planner clearance assessment ${round + 1}`);
@@ -389,7 +392,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         config,
         "planner",
         task,
-        buildClearanceTask(task, discovery, interviewNotes, options.autonomous),
+        buildClearanceTask(task, discovery, interviewNotes, options.autonomous, options.revision?.previous.plan),
         progress,
         "planning-clearance",
         "Planner interview",
@@ -397,18 +400,19 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         signal,
       );
       throwIfWorkflowCancelled(signal);
-      await writeWorkflowRunArtifact(workflowPaths, id, `clearance-${round + 1}.md`, result.output);
-      const parsedClearance = parsePlanningClearance(result.output);
-      if (!parsedClearance) {
+      const clearancePath = await writeWorkflowRunArtifact(workflowPaths, id, `clearance-${round + 1}.md`, result.output);
+      const parsedClearance = inspectPlanningClearance(result.output);
+      if (!parsedClearance.ok) {
         state.status = "blocked";
-        state.plan = "# Planning blocked\n\nPlanner returned an invalid clearance verdict.";
+        state.plan = options.revision?.previous.plan ?? "# Planning blocked\n\nPlanner returned an invalid clearance verdict.";
         state.updatedAt = now();
+        state.interviewNotes = interviewNotes;
         await saveWorkflowPlan(workflowPaths, state);
         progress.finish("blocked", "Planner clearance was invalid");
-        report("Workflow plan blocked", `Planner clearance was absent or malformed. No later planning phase was launched.\n\nPlan: ${state.planPath}`);
+        report("Workflow plan blocked", `Planner clearance could not be validated: ${parsedClearance.reason}\n\nNo later planning phase was launched.\n\nClearance output: ${clearancePath}\nPlan: ${state.planPath}`);
         return { state, cancelled: false, executable: false };
       }
-      clearance = parsedClearance;
+      clearance = parsedClearance.clearance;
       if (clearance.ready) break;
 
       if (options.autonomous) {
@@ -476,7 +480,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       config,
       "planner",
       task,
-      buildPlannerTask(task, discovery, interviewNotes, requirementsAnalysis.output),
+      buildPlannerTask(task, discovery, interviewNotes, requirementsAnalysis.output, options.revision?.previous.plan),
       progress,
       "planning-synthesis",
       "Planner plan",
@@ -501,19 +505,22 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
     await saveWorkflowPlan(workflowPaths, state);
 
     let reviews: AgentResult[] = [];
+    const reviewHistory: string[] = [];
     for (let round = 1; round <= config.workflowMaxPlanReviewLoops; round++) {
-      reviews = await reviewPlan(root, config, task, plan, progress, round, signal);
+      await writeWorkflowRunArtifact(workflowPaths, id, `plan-draft-${round}.md`, plan);
+      reviews = await reviewPlan(root, config, task, plan, progress, round, signal, reviewHistory.join("\n\n"));
       throwIfWorkflowCancelled(signal);
       state.reviewRounds = round;
       state.updatedAt = now();
       await writeWorkflowRunArtifact(workflowPaths, id, `plan-review-${round}.md`, planReviewText(reviews));
+      reviewHistory.push(`### Review round ${round}\n${planReviewText(reviews)}`);
       if (planReviewsPass(reviews, reviewCount(config))) break;
       if (round >= config.workflowMaxPlanReviewLoops) {
         state.status = "blocked";
         state.plan = plan;
         await saveWorkflowPlan(workflowPaths, state);
         progress.finish("blocked", `Plan review still has blockers after ${round} rounds`);
-        report("Workflow plan blocked", `Quality Reviewer or Technical Reviewer still found a verified blocker after ${round} review rounds.\n\n${planReviewText(reviews)}\n\nDraft: ${state.planPath}`);
+        report("Workflow plan blocked", `Independent review still reports material blockers after ${round} rounds.\n\n${planReviewText(reviews)}\n\nDraft: ${state.planPath}\n\nUse \`/plan --revise <feedback>\` to carry this task and draft into a new reviewed attempt. No implementation was started.`);
         return { state, cancelled: false, executable: false };
       }
       progress.update(`Planner revising rejected plan — round ${round}`);
@@ -522,7 +529,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         config,
         "planner",
         task,
-        buildPlanRevisionTask(task, plan, planReviewText(reviews)),
+        buildPlanRevisionTask(task, plan, reviewHistory.join("\n\n")),
         progress,
         "planning-revision",
         "Planner revision",
@@ -584,7 +591,8 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         return { state, cancelled: false, executable: false };
       }
       await saveWorkflowPlan(workflowPaths, state);
-      const editedReviews = await reviewPlan(root, config, task, editedPlan, progress, "user-edit", signal);
+      await writeWorkflowRunArtifact(workflowPaths, id, "plan-draft-user-edit.md", editedPlan);
+      const editedReviews = await reviewPlan(root, config, task, editedPlan, progress, "user-edit", signal, reviewHistory.join("\n\n"));
       throwIfWorkflowCancelled(signal);
       state.reviewRounds += 1;
       await writeWorkflowRunArtifact(workflowPaths, id, "plan-review-user-edit.md", planReviewText(editedReviews));
@@ -792,13 +800,21 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
       report("Planner unavailable", "`/plan` requires interactive UI for its interview and approval checkpoints.");
       return;
     }
-    const task = await getTaskInput(rawArgs, ctx, "Planner planning request");
-    if (!task) return;
+    const request = await getTaskInput(rawArgs, ctx, "Planner planning request");
+    if (!request) return;
     const project = await resolveProject(ctx);
     const authority = await captureWorkflowAuthority(project.workflowPaths);
+    const revise = /^(?:--revise(?:\s|$)|revise (?:the )?plan[.!]?$)/i.test(request.trim());
+    const previous = revise ? authority.state : undefined;
+    if (revise && (!previous || previous.execution || previous.status === "executing" || previous.status === "verified")) {
+      report("Workflow revision unavailable", "`/plan --revise` requires an existing plan whose implementation has not started. Use `/plan <full task>` for new work.");
+      return;
+    }
+    const task = previous?.task ?? request;
+    const revision = previous ? { previous, feedback: request.trim().startsWith("--") ? request.trim().replace(/^--revise\s*/i, "") : "" } : undefined;
     const confirmed = await ctx.ui.confirm(
-      "Start high-accuracy Workflow planning?",
-      `Pi will use the ${project.config.workflowMode} workflow: discovery, a bounded Planner interview, planning, and up to ${project.config.workflowMaxPlanReviewLoops} independent review rounds. No source files will be changed.`,
+      revision ? "Revise the current workflow plan?" : "Start high-accuracy Workflow planning?",
+      `${revision ? `Carry forward task: ${task}\nPrevious plan: ${previous!.id}\n\n` : ""}Pi will use the ${project.config.workflowMode} workflow: discovery, a bounded Planner interview, planning, and up to ${project.config.workflowMaxPlanReviewLoops} independent review rounds. No source files will be changed.`,
     );
     if (!confirmed) return;
 
@@ -809,14 +825,14 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
         dashboard.beginRun(`workflow-plan-${Date.now()}`, runController);
         const progress = progressFor(pi, ctx, "Planner", task, "plan");
         try {
-          const result = await createPlan(project.root, project.paths, project.config, task, ctx, progress, { autonomous: false, autoApprove: false }, runController.signal);
+          const result = await createPlan(project.root, project.paths, project.config, task, ctx, progress, { autonomous: false, autoApprove: false, revision }, runController.signal);
           if (result.state) {
             report(
               result.state.status === "approved" ? "Workflow plan approved" : "Workflow plan saved",
-              `${formatWorkflowPlanStatus(result.state)}\n\n${result.state.status === "approved" ? "Run `/start-work` when ready." : "Revise or rerun `/plan` before execution."}`,
+              `${formatWorkflowPlanStatus(result.state)}\n\n${result.state.status === "approved" ? "Run `/start-work` when ready." : "Use `/plan --revise <feedback>` to preserve this task and draft, or `/plan <full task>` for a new request."}`,
             );
           }
-          progress.finish(result.cancelled ? "cancelled" : "completed", result.cancelled ? "Planning cancelled" : "Planning finished");
+          progress.finish(result.cancelled ? "cancelled" : result.state?.status === "blocked" ? "blocked" : "completed", result.cancelled ? "Planning cancelled" : result.state?.status === "blocked" ? "Planning blocked" : "Planning finished");
         } catch (error) {
           const cancelled = isWorkflowCancellation(error, runController.signal);
           const message = error instanceof Error ? error.message : String(error);
@@ -1159,7 +1175,7 @@ export function registerWorkflow(pi: ExtensionAPI, dependencies: WorkflowDepende
   });
 
   pi.registerCommand("plan", {
-    description: "Interview, research, and produce an independently reviewed implementation plan without changing source files",
+    description: "Produce a reviewed plan; --revise [feedback] carries forward the current task and draft without changing source files",
     handler: runPlanningCommand,
   });
 

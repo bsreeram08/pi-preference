@@ -103,6 +103,8 @@ Approved plan → implementer → independent technical reviewer → verifier
 
 Planning includes discovery and independent plan review. Execution uses one writer by default; parallel candidates are opt-in. Set `"workflowMode": "thorough"` in `.pi/pi-workbench/config.json` for a separate requirements analyst, execution manager, and dual reviews. Both modes retain approval, writer ownership, bounded repair loops, and recorded verification.
 
+If a plan is blocked before implementation, use `/plan --revise <feedback>` to carry forward its original task, draft, and interview decisions. `/plan revise plan` is a shorthand for revising the current plan. Revision starts a new attempt with fresh discovery, independent review, and approval; it does not resume implementation. A new `/plan <task>` starts from that new request. Later review rounds receive prior independent findings and must distinguish resolved, remaining, and new issues; material new blockers can still stop the plan at the configured limit.
+
 After the run, `/workflow-status` shows the state and evidence paths. Inspect `checks-N.md` and the criterion assessment, and run the relevant tests yourself. For a copyable scratch-project example and expected success, failure, and timeout results, see [Testing the harness](docs/testing-harness.md).
 
 ## Commands
@@ -116,6 +118,7 @@ After the run, `/workflow-status` shows the state and evidence paths. Inspect `c
 | `/goals-set <objective>` | Create or replace the goal. The agent does not create goals |
 | `/goals-clear` | Remove the goal file |
 | `/plan [task]` | Clarify, plan, and independently review acceptance criteria |
+| `/plan --revise [feedback]` | Replan from the current task and draft before implementation starts |
 | `/start-work` | Implement, independently review, repair, and verify the approved plan |
 | `/autopilot [task]` | Plan, implement, review, and verify in one run |
 | `/automode [on\|off\|status]` | Keep this Coordinator session moving with conservative defaults |

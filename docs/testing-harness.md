@@ -42,6 +42,22 @@ Run `/workflow-status` and inspect the reported artifact paths. Look for `checks
 
 The automated tests cover stale receipts and tampered artifacts. For a manual failure demonstration, ask the main Pi tool to run a deliberately failing test in the scratch project and confirm it produces a non-passing receipt. A full workflow may correctly repair a defect and pass later; inspect the final checks rather than expecting the entire workflow to remain failed.
 
+## Revise a blocked plan
+
+Before implementation starts, use `/plan --revise <specific feedback>` to revise the current plan. Confirm that the dialog names the original task and prior plan ID. The new attempt retains the draft and interview decisions, refreshes repository discovery, and still requires independent review and approval. `/plan revise plan` is also recognized. A failed discovery or malformed clearance must not replace a carried-forward draft with a generic error stub.
+
+Review artifacts pair `plan-draft-N.md` with `plan-review-N.md`, so each round's input can be compared with its findings. Later reviewers and revisions receive earlier independent findings; reviewers should mark resolved, remaining, and new issues rather than repeatedly treating the plan as a first draft. This is context continuity, not proof that the model will converge or produce better output.
+
+A valid `<clearance>` response with `ready: false` opens the interview. A missing marker, invalid JSON, or invalid field type blocks with a validation reason and the saved clearance artifact path. Malformed output is never converted into approval.
+
+Run the command-level regressions:
+
+```sh
+rtk proxy bun test tests/workflow-orchestration.test.ts tests/pi-workbench.test.ts tests/workflow-safety.test.ts
+```
+
+Older versions treated `revise plan` as a new task. If that already replaced the current workflow, the new revision command cannot reconstruct the original task automatically. Start `/plan` with the full original request and explicitly reference the earlier saved plan and review paths; review the recovered scope before approving it.
+
 ## Research checks
 
 Run the provenance and audit regressions:
