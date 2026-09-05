@@ -8,6 +8,57 @@ import { routeTask } from "../routing.ts";
 import { buildCodeReviewTask } from "../workflow-prompts.ts";
 
 describe("task-specific child context", () => {
+  test("loads a full design skill larger than the instruction limit alongside implementation guidance", async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "agent-context-large-"));
+    try {
+      const skillRoot = path.join(base, "agent", "skills");
+      for (const [name, size] of [["emil-design-eng", 27_226], ["codebase-design", 6_446], ["tdd", 3_549], ["animate", 11_575]] as const) {
+        await fs.mkdir(path.join(skillRoot, name), { recursive: true });
+        await fs.writeFile(path.join(skillRoot, name, "SKILL.md"), "x".repeat(size - name.length) + name);
+      }
+      const bundle = await buildAgentContext({ projectRoot: base, agentDir: path.join(base, "agent"), home: base, role: "implementer", task: "Build a 3D UI with animation" });
+      for (const name of ["emil-design-eng", "codebase-design", "tdd", "animate"]) expect(bundle).toContain(`Selected skill: ${name}`);
+      expect(bundle).toContain("x".repeat(27_226 - "emil-design-eng".length) + "emil-design-eng");
+      expect(bundle).not.toContain("Skills not supplied");
+    } finally { await fs.rm(base, { recursive: true, force: true }); }
+  });
+
+  test("omits oversized or non-file optional skills without falling back to lower-priority copies", async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "agent-context-optional-"));
+    try {
+      const local = path.join(base, ".agents", "skills", "emil-design-eng", "SKILL.md");
+      const fallback = path.join(base, "agent", "skills", "emil-design-eng", "SKILL.md");
+      await fs.mkdir(path.dirname(local), { recursive: true });
+      await fs.mkdir(path.dirname(fallback), { recursive: true });
+      await fs.writeFile(local, "x".repeat(32_001));
+      await fs.writeFile(fallback, "LOWER-PRIORITY-COPY");
+      const options = { projectRoot: base, agentDir: path.join(base, "agent"), home: base, role: "codebase-explorer", task: "Inspect the UI" };
+      const oversized = await buildAgentContext(options);
+      expect(oversized).toContain("exceeds 32000 bytes");
+      expect(oversized).not.toContain("LOWER-PRIORITY-COPY");
+      await fs.rm(local);
+      await fs.mkdir(local);
+      expect(await buildAgentContext(options)).toContain("not a regular file");
+      await fs.writeFile(path.join(base, "AGENTS.md"), "x".repeat(24_001));
+      await expect(buildAgentContext(options)).rejects.toThrow("exceeds 24000 bytes");
+    } finally { await fs.rm(base, { recursive: true, force: true }); }
+  });
+
+  test("enforces the aggregate skill budget without truncating or aborting", async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "agent-context-budget-"));
+    try {
+      for (const name of ["tdd", "codebase-design", "emil-design-eng"]) {
+        const file = path.join(base, "agent", "skills", name, "SKILL.md");
+        await fs.mkdir(path.dirname(file), { recursive: true });
+        await fs.writeFile(file, "x".repeat(30_000));
+      }
+      const bundle = await buildAgentContext({ projectRoot: base, agentDir: path.join(base, "agent"), home: base, role: "implementer", task: "Build UI" });
+      expect(bundle).toContain("Selected skill: tdd");
+      expect(bundle).toContain("Selected skill: codebase-design");
+      expect(bundle).not.toContain("Selected skill: emil-design-eng");
+      expect(bundle).toContain("combined skill budget of 64000 bytes");
+    } finally { await fs.rm(base, { recursive: true, force: true }); }
+  });
   test("supplies project instructions, referenced RTK and selected skill content", async () => {
     const base = await fs.mkdtemp(path.join(os.tmpdir(), "agent-context-"));
     try {

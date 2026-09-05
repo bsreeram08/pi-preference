@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fixed planning interruption on valid design skills above the repository-instruction size limit. Optional skills have separate per-file and aggregate budgets and are omitted with a reason if unavailable; mandatory repository instructions retain their strict checks.
+
 - Addressed review feedback: support native verification in non-Git projects, supply implementation skills to the integration implementer, and restore generic market-research classification.
 - Record research source snapshots in the parent, bind excerpts and actual retrieval metadata, restrict user verification to submitted observations, and map temporary citations mechanically. Audits reject unbound or altered sources, uncited numeric passages, unresolved refresh states, failed/ambiguous auditors, and silently incomplete inputs. Fast research retains counterevidence, and quantitative analysis follows source collection.
 
