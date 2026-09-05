@@ -1,6 +1,6 @@
 # Contributing to Sreeram's Pi Workbench
 
-Thank you for helping improve the Workbench. Participation is governed by the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+This repository is a personal Pi profile. Participation here is governed by the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Before starting
 
@@ -46,6 +46,8 @@ PI_CODING_AGENT_DIR="$(mktemp -d)/agent" ./install.sh --strict
 The installer integration check must use a temporary Pi agent directory, not your everyday configuration. Maintainers must also run `bun run release-check` from a clean committed tree before changing visibility or publishing a release.
 
 Changes to memory, child tools, installation, process execution, or trust boundaries need focused regression tests. Never weaken a fail-closed check solely to make a test pass.
+
+Use [Testing the harness](docs/testing-harness.md) for a real Pi tool check and a scratch-project workflow. Native receipts establish command execution and code identity; reviewers must also assess test adequacy. Follow [Harness evaluation](docs/harness-evaluation.md) before claiming improved model quality. The research flow described there remains proposed work.
 
 ## Pull requests
 

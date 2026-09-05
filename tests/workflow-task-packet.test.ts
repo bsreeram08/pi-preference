@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { observedChecks } from "./fixtures/check-evidence.ts";
 import {
   buildCodeReviewTask,
   buildExecutionBriefTask,
@@ -162,9 +163,21 @@ describe("workflow packet prompt disclosure", () => {
 });
 
 describe("workflow packet verification codec", () => {
+  test("fabricated text, missing checks, wrong criteria, failed commands and stale snapshots cannot pass", () => {
+    const packet = bindWorkflowTaskPacket(planWith());
+    const output = verificationOutput();
+    expect(evaluateWorkflowVerification(output, packet)).toMatchObject({ result: "protocol-failure", protocolFailure: "missing-host-evidence" });
+    const observed = observedChecks(packet.acceptanceCriteria);
+    for (const candidate of [
+      { ...observed, receipts: [] },
+      { ...observed, snapshot: "changed" },
+      { ...observed, receipts: observed.receipts.map((item) => ({ ...item, exitCode: 1 })) },
+      { ...observed, receipts: observed.receipts.map((item) => ({ ...item, criterionIds: ["other"] })) },
+    ]) expect(packetVerificationPasses(evaluateWorkflowVerification(output, packet, candidate))).toBe(false);
+  });
   test("accepts only an exactly bound, complete passing canonical marker", () => {
     const packet = bindWorkflowTaskPacket(planWith());
-    const evaluation = evaluateWorkflowVerification(` \n${verificationOutput()}\n`, packet);
+    const evaluation = evaluateWorkflowVerification(` \n${verificationOutput()}\n`, packet, observedChecks(packet.acceptanceCriteria));
     expect(packetVerificationPasses(evaluation)).toBe(true);
     expect(evaluation).toMatchObject({ result: "passed", packetId: packet.packetId, planDigest: packet.planDigest });
   });
@@ -242,7 +255,7 @@ describe("workflow packet verification codec", () => {
     const output = verificationOutput(payload);
     expect(Buffer.byteLength(payload, "utf8")).toBeLessThan(48 * 1024);
     expect(Buffer.byteLength(output, "utf8")).toBeLessThan(50 * 1024);
-    expect(packetVerificationPasses(evaluateWorkflowVerification(output, packet))).toBe(true);
+    expect(packetVerificationPasses(evaluateWorkflowVerification(output, packet, observedChecks(packet.acceptanceCriteria)))).toBe(true);
   });
 
   test("rejects oversized or unsafe evidence and non-required failed/skipped evidence", () => {

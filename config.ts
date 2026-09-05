@@ -4,6 +4,7 @@ import type { ProjectPaths } from "./types.ts";
 import { normalizeRoutingFamily, normalizeRoutingPolicy, type RoutingFamily, type RoutingPolicy } from "./routing.ts";
 
 export interface WorkbenchConfig {
+  workflowMode: "focused" | "thorough";
   maxCouncilAgents: number;
   parallelImplementationWorkers: number;
   maxFixLoops: number;
@@ -31,8 +32,9 @@ export interface WorkbenchConfig {
 }
 
 export const DEFAULT_CONFIG: WorkbenchConfig = {
+  workflowMode: "focused",
   maxCouncilAgents: 6,
-  parallelImplementationWorkers: 3,
+  parallelImplementationWorkers: 1,
   maxFixLoops: 5,
   defaultImplementationSession: "ask",
   qmdEnabled: true,
@@ -84,11 +86,12 @@ export function normalizeConfig(value: unknown): WorkbenchConfig {
   const input = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const session = input.defaultImplementationSession;
   return {
+    workflowMode: input.workflowMode === "thorough" ? "thorough" : "focused",
     maxCouncilAgents: boundedInteger(input.maxCouncilAgents, DEFAULT_CONFIG.maxCouncilAgents, 3, 8),
     parallelImplementationWorkers: boundedInteger(
       input.parallelImplementationWorkers,
       DEFAULT_CONFIG.parallelImplementationWorkers,
-      2,
+      1,
       4,
     ),
     maxFixLoops: boundedInteger(input.maxFixLoops, DEFAULT_CONFIG.maxFixLoops, 1, 10),

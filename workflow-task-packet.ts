@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { checkPassed, type VerificationEvidence } from "./verification.ts";
 
 export const WORKFLOW_EVIDENCE_KINDS = [
   "automated-test",
@@ -45,7 +46,8 @@ export type WorkflowVerificationProtocolFailure =
   | "legacy-marker"
   | "malformed-envelope"
   | "invalid-payload"
-  | "binding-mismatch";
+  | "binding-mismatch"
+  | "missing-host-evidence";
 
 interface WorkflowPacketVerificationBase {
   readonly schemaVersion: 1;
@@ -264,7 +266,7 @@ function protocolFailure(
   };
 }
 
-export function evaluateWorkflowVerification(output: string, packet: WorkflowTaskPacket): WorkflowPacketVerification {
+export function evaluateWorkflowVerification(output: string, packet: WorkflowTaskPacket, observed?: VerificationEvidence): WorkflowPacketVerification {
   const verifierOutputDigest = `sha256:${digest(output)}`;
   if (/<(?:verified|failed)\s*\/>/i.test(output)) return protocolFailure(packet, verifierOutputDigest, "legacy-marker");
   const trimmed = output.trim();
@@ -299,6 +301,12 @@ export function evaluateWorkflowVerification(output: string, packet: WorkflowTas
     }
   }
   const criteria = value.criteria as WorkflowCriterionVerification[];
+  for (const criterion of criteria.every((item) => item.status === "passed") ? criteria : []) {
+    if (!observed || criterion.evidence.some(({ kind }) => {
+      const checks = observed.receipts.filter((receipt) => receipt.kind === kind && receipt.criterionIds.includes(criterion.criterionId));
+      return checks.length === 0 || !checks.every((receipt) => checkPassed(receipt, observed.snapshot));
+    })) return protocolFailure(packet, verifierOutputDigest, "missing-host-evidence");
+  }
   return {
     schemaVersion: 1,
     packetId: packet.packetId,
@@ -318,7 +326,7 @@ export function validateWorkflowPacketVerification(
   if (typeof value.verifierOutputDigest !== "string" || !/^sha256:[a-f0-9]{64}$/.test(value.verifierOutputDigest)) return false;
   if (value.result === "protocol-failure") {
     return hasExactKeys(value, VERIFICATION_FAILURE_KEYS)
-      && ["legacy-marker", "malformed-envelope", "invalid-payload", "binding-mismatch"].includes(String(value.protocolFailure));
+      && ["legacy-marker", "malformed-envelope", "invalid-payload", "binding-mismatch", "missing-host-evidence"].includes(String(value.protocolFailure));
   }
   if (!hasExactKeys(value, VERIFICATION_RESULT_KEYS) || (value.result !== "passed" && value.result !== "failed")) return false;
   if (!Array.isArray(value.criteria) || value.criteria.length !== packet.acceptanceCriteria.length) return false;

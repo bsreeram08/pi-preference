@@ -37,6 +37,9 @@ describe("Workbench cases", () => {
       expect(failed?.gap).toContain("Persistent read-only");
       expect(succeeded?.intent).toContain("Ship routing family");
       expect(recalled).toHaveLength(2);
+      expect((await store.recall("Please investigate the interactive explorer problem"))).toHaveLength(1);
+      expect((await store.recall("Please investigate the interactive explorer problem"))[0].intent).toContain("Interactive explorer");
+      expect(await store.recall("Unrelated typography changes")).toEqual([]);
       const l1 = renderCaseL1(recalled);
       expect(l1).toContain("continuity only");
       expect(l1).toContain("failure");

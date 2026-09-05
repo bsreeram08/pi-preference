@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { applyTodoAction, restoreTodoSnapshot } from "../workbench-todo.ts";
 import { validateAskQuestions } from "../workbench-ask.ts";
-import { parseGoal, renderGoal, goalPath } from "../workbench-goal.ts";
+import { parseGoal, renderGoal, goalPath, registerWorkbenchGoal } from "../workbench-goal.ts";
 
 describe("workbench todo", () => {
   test("creates, updates, and lists items without cycles", () => {
@@ -41,6 +41,21 @@ describe("workbench ask", () => {
 });
 
 describe("workbench goal", () => {
+  test("does not inject paused goals as active instructions", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "workbench-paused-goal-"));
+    try {
+      let beforeStart: any;
+      registerWorkbenchGoal({ on(_event: string, handler: any) { beforeStart = handler; }, registerTool() {}, registerCommand() {} } as any,
+        { exec: async () => ({ stdout: root, stderr: "", code: 0 }), report() {} });
+      const file = goalPath(path.join(root, ".pi", "pi-workbench"));
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      const goal = { version: 1, objective: "Paused objective", status: "paused", autoContinue: false, updatedAt: new Date().toISOString() };
+      await fs.writeFile(file, JSON.stringify(goal));
+      expect(await beforeStart({ systemPrompt: "base" }, { cwd: root })).toBeUndefined();
+      await fs.writeFile(file, JSON.stringify({ ...goal, status: "active" }));
+      expect((await beforeStart({ systemPrompt: "base" }, { cwd: root })).systemPrompt).toContain("Paused objective");
+    } finally { await fs.rm(root, { recursive: true, force: true }); }
+  });
   test("parses and renders a user-owned goal", async () => {
     expect(parseGoal({})).toBeUndefined();
     const goal = parseGoal({

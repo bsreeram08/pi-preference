@@ -62,8 +62,14 @@ for (const [name, version] of Object.entries(manifest.devDependencies ?? {})) {
 
 const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 if (!readme.startsWith("# Sreeram's Pi Workbench\n")) fail("README title does not use the approved public name");
-if (/private GitHub repository|git@github\.com:bsreeram08\/pi-workbench/.test(readme)) {
-  fail("README still contains private or SSH-only distribution guidance");
+if (!/personal Pi profile/.test(readme)) {
+  fail("README must identify this repository as a personal Pi profile");
+}
+if (/git@github\.com:bsreeram08\/pi-workbench/.test(readme)) {
+  fail("README must not use SSH-only clone as the install door");
+}
+if (!/Do not `pi install npm:pi-workbench`/.test(readme)) {
+  fail("README must tell strangers not to pi install npm:pi-workbench");
 }
 
 const settings = JSON.parse(fs.readFileSync(path.join(root, "setup/defaults/settings.json"), "utf8"));

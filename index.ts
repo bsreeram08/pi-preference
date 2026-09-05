@@ -56,10 +56,13 @@ import { registerWorkbenchCases } from "./cases.ts";
 import { registerWorkbenchTodo } from "./workbench-todo.ts";
 import { registerWorkbenchAsk } from "./workbench-ask.ts";
 import { registerWorkbenchGoal } from "./workbench-goal.ts";
+import { registerVerificationTool } from "./verification-tool.ts";
+import { checkPassed } from "./verification.ts";
 import { registerUsageCommand } from "./usage.ts";
 import { registerModelRouting } from "./model-routing.ts";
 import { registerAutomode } from "./automode.ts";
 import { registerWorkbenchUpdate } from "./workbench-update.ts";
+import { guardSubagentLaunch } from "./project-trust.ts";
 import type { AgentResult, AgentSpec, CouncilSession, Exec } from "./types.ts";
 import { canDelegateSpecialists, SupervisorClient, type SupervisorDecision } from "./supervisor.ts";
 import {
@@ -109,6 +112,10 @@ function parseLeadSections(output: string): LeadSections {
 function withIntentStatus(content: string, status: "Draft" | "Approved"): string {
   const withoutOldStatus = content.replace(/^> Status: (?:Draft|Approved)\s*$/m, "").trim();
   return `> Status: ${status}\n> Updated: ${ISO()}\n\n${withoutOldStatus}`;
+}
+
+function sessionAllowsImplementation(session: CouncilSession | undefined): session is CouncilSession {
+  return Boolean(session && session.phase !== "clarifying");
 }
 
 function makeSession(root: string, topic: string, agents: string[]): CouncilSession {
@@ -277,6 +284,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
   });
   registerWorkbenchTodo(pi, (title, body) => report(pi, title, body));
   registerWorkbenchAsk(pi);
+  registerVerificationTool(pi);
   registerWorkbenchGoal(pi, {
     exec,
     report: (title, body) => report(pi, title, body),
@@ -321,6 +329,11 @@ export default function piWorkbench(pi: ExtensionAPI) {
   pi.registerCommand("council", {
     description: "Interrogate an idea with a dynamic council and produce an approved project Intent.md",
     handler: async (rawArgs, ctx) => {
+      const trustRequired = guardSubagentLaunch(ctx);
+      if (trustRequired) {
+        report(pi, "Project trust required", trustRequired);
+        return;
+      }
       if (!ctx.hasUI) {
         report(pi, "Council unavailable", "`/council` requires interactive UI for user checkpoints.");
         return;
@@ -488,8 +501,8 @@ export default function piWorkbench(pi: ExtensionAPI) {
         }
 
         const approved = await ctx.ui.confirm(
-          "Approve project intent?",
-          "Approval makes Intent.md the source of truth for /council-implement. You can run /council again to revise it.",
+          "Use this Intent.md?",
+          "Confirming records the decision in session.json. Intent.md stays the page to read; a Status line in the markdown is not a runtime gate. You can run /council again to revise it.",
         );
         await writeText(paths.intent, withIntentStatus(edited, approved ? "Approved" : "Draft"));
         await appendDecision(
@@ -516,8 +529,13 @@ export default function piWorkbench(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("council-implement", {
-    description: "Implement an approved intent with isolated parallel workers, parallel reviews, and a strict test gate",
+    description: "Implement a TUI-confirmed intent with one isolated writer by default, then reviews and a test gate",
     handler: async (rawArgs, ctx) => {
+      const trustRequired = guardSubagentLaunch(ctx);
+      if (trustRequired) {
+        report(pi, "Project trust required", trustRequired);
+        return;
+      }
       if (!ctx.hasUI) {
         report(pi, "Implementation unavailable", "`/council-implement` requires interactive UI.");
         return;
@@ -528,8 +546,8 @@ export default function piWorkbench(pi: ExtensionAPI) {
       const session = authority.session;
       const config = await loadConfig(paths);
       const intent = authority.intent;
-      if (!session || session.phase === "clarifying" || !/^> Status: Approved$/m.test(intent)) {
-        report(pi, "Intent not approved", "Run `/council <idea>` and approve Intent.md before implementation.");
+      if (!sessionAllowsImplementation(session)) {
+        report(pi, "Intent not confirmed", "Run `/council <idea>` and confirm Intent.md in the TUI before implementation. A Status line in the markdown is not enough.");
         return;
       }
 
@@ -576,7 +594,7 @@ export default function piWorkbench(pi: ExtensionAPI) {
 
       const confirmed = await ctx.ui.confirm(
         "Begin opinionated implementation?",
-        `Sreeram's Pi Workbench will run ${config.parallelImplementationWorkers} isolated implementation workers, merge their work, review in parallel, and loop until tests pass or ${config.maxFixLoops} fix attempts are exhausted.`,
+        `This desk will run ${config.parallelImplementationWorkers} isolated implementation worker${config.parallelImplementationWorkers === 1 ? "" : "s"} (default is one), then review and a test gate, for up to ${config.maxFixLoops} fix loops. Parallel workers are opt-in. Model text is not a host receipt.`,
       );
       if (!confirmed) return;
 
@@ -765,7 +783,10 @@ export default function piWorkbench(pi: ExtensionAPI) {
             `Review cycle ${attempt + 1} is complete. Decide whether to complete, fix, or run another targeted review. The independent test gate is authoritative.\n\nREVIEWS:\n${reviewText}\n\nVERIFICATION:\n${verification.output}`,
           );
 
-          if (isVerified(verification.output) && !reviewsRequireChanges(reviews) && outcomeDecision.action === "complete") {
+          const observedChecks = verification.verification;
+          const checksPassed = observedChecks && observedChecks.receipts.length > 0
+            && observedChecks.receipts.every((receipt) => checkPassed(receipt, observedChecks.snapshot));
+          if (isVerified(verification.output) && checksPassed && !reviewsRequireChanges(reviews) && outcomeDecision.action === "complete") {
             session.phase = "verified";
             session.updatedAt = ISO();
             session.implementation = {

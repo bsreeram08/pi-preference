@@ -19,6 +19,7 @@ export interface AgentResult {
   exitCode: number;
   cancelled?: boolean;
   error?: string;
+  verification?: import("./verification.ts").VerificationEvidence;
   routing?: {
     effort: "light" | "standard" | "heavy";
     model: string;

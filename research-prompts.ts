@@ -125,8 +125,8 @@ const GENERAL_TRACKS: TrackTemplate[] = [
 
 export function detectResearchMode(question: string): ResearchMode {
   const lower = question.toLowerCase();
+  if (/\b(cafe|restaurant|board-?game|catchment|commercial rent|commercial property|real estate)\b/.test(lower)) return "market";
   if (/\b(api|sdk|library|framework|documentation|docs|specification|source code|version|release|lts|runtime|dependency|package|migration|protocol|technical|node\.js)\b/.test(lower)) return "technical";
-  if (/\b(market|business|competitor|pricing|price|rent|property|customer|location|cafe|restaurant|commercial|demand|revenue|profit)\b/.test(lower)) return "market";
   return "general";
 }
 

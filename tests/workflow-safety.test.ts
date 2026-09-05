@@ -31,6 +31,7 @@ import {
   type WorkflowPlanState,
 } from "../workflow-state.ts";
 import { bindWorkflowTaskPacket, canonicalWorkflowTaskPacketMarker, evaluateWorkflowVerification, type WorkflowTaskPacketDeclaration } from "../workflow-task-packet.ts";
+import { observedChecks } from "./fixtures/check-evidence.ts";
 import type { AgentResult, AgentSpec } from "../types.ts";
 
 function result(overrides: Partial<AgentResult> = {}): AgentResult {
@@ -76,7 +77,7 @@ function passingVerification(planText: string) {
     packetId: packet.packetId,
     planDigest: packet.planDigest,
     criteria: [{ criterionId: "state-roundtrip", status: "passed", evidence: [{ kind: "automated-test", summary: "State tests passed." }] }],
-  })}</workflow-verification>`, packet);
+  })}</workflow-verification>`, packet, observedChecks(packet.acceptanceCriteria));
 }
 
 function leaseDependencies(

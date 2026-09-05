@@ -40,6 +40,34 @@ describe("first-party agent runtime tool surface", () => {
       .rejects.toThrow("Persistent mutation-capable agents are deferred");
   });
 
+  test("blocks persistent agents when project resources are not trusted", async () => {
+    const tools: any[] = [];
+    let started = false;
+    registerAgentRuntimeTools({ registerTool(tool: unknown) { tools.push(tool); } } as any, {
+      manager: {
+        async start() {
+          started = true;
+          throw new Error("must not start");
+        },
+      } as any,
+      exec: async () => { throw new Error("project discovery must not run"); },
+      getRoutingState: () => ({ policy: "balanced" }),
+    });
+    const start = tools.find((tool) => tool.name === "workbench_agent_start");
+    const notices: string[] = [];
+    const result = await start.execute("call", { agent: "codebase-explorer", task: "Inspect the repository map." }, undefined, undefined, {
+      cwd: "/project",
+      hasUI: true,
+      isProjectTrusted: () => false,
+      ui: { notify(message: string) { notices.push(message); } },
+    });
+    const expected = "This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision, then restart pi.";
+    expect(result.content[0]?.text).toBe(expected);
+    expect(result.details).toEqual({ blocked: true, reason: "project-trust-required" });
+    expect(notices).toEqual([expected]);
+    expect(started).toBe(false);
+  });
+
   test("starts persistent read-only Bash-capable profiles", async () => {
     const tools: any[] = [];
     let started: any;
@@ -57,7 +85,12 @@ describe("first-party agent runtime tool surface", () => {
       getRoutingState: () => ({ policy: "balanced" }),
     });
     const start = tools.find((tool) => tool.name === "workbench_agent_start");
-    const result = await start.execute("call", { agent: "codebase-explorer", task: "Inspect the repository map." }, undefined, undefined, { cwd: "/project" });
+    const result = await start.execute("call", { agent: "codebase-explorer", task: "Inspect the repository map." }, undefined, undefined, {
+      cwd: "/project",
+      hasUI: true,
+      isProjectTrusted: () => true,
+      ui: { notify() {} },
+    });
     expect(started).toMatchObject({
       projectRoot: "/project",
       agent: { id: "codebase-explorer", readOnly: true, allowBash: true },

@@ -3,9 +3,11 @@
 [![CI](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/bsreeram08/pi-workbench/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-FF8A4C.svg)](LICENSE)
 
-A first-party [Pi](https://github.com/earendil-works/pi) workbench. Main Pi is the **Coordinator**. It clarifies intent, routes work to first-party specialists, keeps reviewed memory, and records what happened.
+A personal Pi profile built as a first-party [Pi](https://github.com/earendil-works/pi) workbench. Main Pi is the **Coordinator**. It clarifies intent, routes work to first-party specialists, keeps reviewed memory, and records what happened.
 
-Workbench is no longer a bundle of third-party session tools. Interactive agents, todos, structured questions, and user-owned goals ship in this repository.
+Interactive agents, todos, structured questions, user-owned goals, and recorded verification ship in this repository.
+
+Do not `pi install npm:pi-workbench`. Use the recursive Git installation below; this repository keeps `private: true` to prevent accidental npm publication.
 
 > **Pre-1.0:** interfaces and stored formats may evolve. Pi extensions run with the permissions of the user running Pi. Read [`SECURITY.md`](SECURITY.md) and the pinned RePrompter submodule before installing.
 
@@ -19,6 +21,7 @@ Workbench is no longer a bundle of third-party session tools. Interactive agents
 | Continuity | `workbench_cases`, `/cases` | Intent → action → outcome → gap. Not memory |
 | Memory | `workbench_memory`, `/memory` | Reviewed, fallible, isolated by default |
 | Planning | `/plan`, `/start-work`, `/autopilot`, `/council` | Intent, isolated implementation, independent verification |
+| Verification | `workbench_verify` | Recorded commands, exit status, output artifacts, and code fingerprints |
 | Research | `/research` | Cited evidence ledger, not search-snippet authority |
 | Routing | `/model-routing` | Per-lane Codex or Grok 4.6 family for **children**; Main Pi stays put |
 
@@ -33,7 +36,7 @@ Trust, child isolation, and cmux identity rules live in [`SECURITY.md`](SECURITY
 3. User decisions and their rationale are durable project knowledge.
 4. Implementation starts from an approved `Intent.md` or an approved workflow plan.
 5. Parallel writers use isolated Git worktrees. Persistent mutation agents stay deferred.
-6. Completion needs independent, visible test evidence.
+6. Completion needs independent review and native check receipts tied to unchanged code. A zero exit proves execution; review must still judge whether the tests cover the requested behavior.
 7. Recalled memory is fallible data. Verify consequential claims against the workspace.
 8. Child model routing is per lane (complexity, uncertainty, risk, breadth, verification cost). Role names do not lock a model.
 9. Explicit user preferences outrank generic defaults.
@@ -89,6 +92,19 @@ Remove the Workbench, Pi Look, startup-header, and Ember links under `${PI_CODIN
 
 Backups: `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/backups/pi-workbench/<timestamp-pid>/`.
 
+## Start a coding task
+
+Run `/plan <task>`, review the acceptance criteria, then `/start-work`. The default focused execution is:
+
+```text
+Approved plan → implementer → independent technical reviewer → verifier
+                              ↑         repair loop         ↓
+```
+
+Planning includes discovery and independent plan review. Execution uses one writer by default; parallel candidates are opt-in. Set `"workflowMode": "thorough"` in `.pi/pi-workbench/config.json` for a separate requirements analyst, execution manager, and dual reviews. Both modes retain approval, writer ownership, bounded repair loops, and recorded verification.
+
+After the run, `/workflow-status` shows the state and evidence paths. Inspect `checks-N.md` and the criterion assessment, and run the relevant tests yourself. For a copyable scratch-project example and expected success, failure, and timeout results, see [Testing the harness](docs/testing-harness.md).
+
 ## Commands
 
 | Command | Purpose |
@@ -99,8 +115,8 @@ Backups: `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/backups/pi-workbench/<timestam
 | `/goals` | Show the user-owned Workbench goal |
 | `/goals-set <objective>` | Create or replace the goal. The agent does not create goals |
 | `/goals-clear` | Remove the goal file |
-| `/plan [task]` | Interview, plan, Quality + Technical review |
-| `/start-work` | Execute the approved plan |
+| `/plan [task]` | Clarify, plan, and independently review acceptance criteria |
+| `/start-work` | Implement, independently review, repair, and verify the approved plan |
 | `/autopilot [task]` | Plan, implement, review, and verify in one run |
 | `/automode [on\|off\|status]` | Keep this Coordinator session moving with conservative defaults |
 | `/workflow-status` | Current plan state and evidence paths |
@@ -109,7 +125,7 @@ Backups: `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/backups/pi-workbench/<timestam
 | `/memory [query]` | Memory status, pending proposals, or recall |
 | `/cases [status\|recall [query]]` | Continuity cases |
 | `/council [idea]` | Visible council pass, then Intent.md |
-| `/council-implement` | Isolated parallel implementation after approved intent |
+| `/council-implement` | One isolated writer by default after approved intent; parallel candidates are opt-in |
 | `/council-force-complete [reason]` | Recorded verification override |
 | `/council-decision [decision]` | Record what the user decided and why |
 | `/council-knowledge [query]` | Search QMD-indexed project knowledge |
@@ -130,6 +146,7 @@ Prefer these over leftover third-party names:
 
 - `delegate_task` — one-shot specialist work. Read-only specialists may use Bash for inspection; writers go through the single-writer lease.
 - `workbench_agent_start` / `_message` / `_status` / `_answer` / `_cancel` / `_focus` — persistent read-only agents. Inside cmux they are unfocused Pi TUI tabs (`Ctrl+Alt+A` focuses the dashboard).
+- `workbench_verify` — run a verification command and retain a native process receipt.
 - `workbench_todo` — session task list (`/todos`).
 - `workbench_ask` — up to four structured questions when a real decision is required.
 - `workbench_goal` — get/complete/pause/resume. Create with `/goals-set`.
@@ -151,6 +168,24 @@ Shipped default family is Codex: light Luna/low, standard Terra/medium, heavy So
 
 GPT Luna/Sol children use priority service when `fastMode` is true (project default). Set `"fastMode": false` in project config to disable.
 
+## Verification and child context
+
+`workbench_verify` accepts literal `argv`, an optional project-relative `cwd`, acceptance `criterionIds`, an evidence `kind`, and a timeout. The runtime records actual exit/interruption status, private JSON/log artifacts, output digests, and before/after code fingerprints. Workflow completion additionally checks invocation/result correlation and the final workspace fingerprint. Ordinary Bash output and a model-written “passed” statement cannot replace these receipts.
+
+Fingerprints include dirty tracked files, non-ignored untracked files, modes, symlink targets, and initialized submodules. Ignored files and Workbench runtime state are excluded; external dependencies and services are not frozen. The model receives a bounded output tail, while full output is retained privately up to the limit. This is cooperative execution evidence, not an OS sandbox or a guarantee that the selected tests are sufficient.
+
+Children receive explicit global/project `AGENTS.md`, supported Markdown references, and task-selected installed skills while ambient extension/skill discovery remains disabled. Missing skills are reported. Routing uses the original task, independent code review omits the author's self-assessment, cases are recalled by relevance, and paused goals are excluded from active instructions.
+
+Workbench checks Pi's project-trust decision before launching children. For an untrusted project, run `/trust` and restart Pi before launching a workflow.
+
+## Research: current behavior and next design
+
+`/research` currently runs parallel tracks, builds an evidence ledger, synthesizes a report, and requests an independent audit. Its prompts distinguish primary sources, reported claims, inference, conflicting evidence, and user observations.
+
+Its current audit is limited: model-supplied provenance is not bound to recorded retrievals, bibliography references can satisfy a report-wide citation check, and unresolved source-review states can escape the deterministic audit. A research PASS is not equivalent to a native code-check receipt.
+
+The proposed flow is **decision → research questions → recorded source retrievals → supported claims → calculations → synthesis → independent claim audit → targeted corrections**. This redesign is documented, not implemented. See [Harness evaluation](docs/harness-evaluation.md) for the evidence requirements and comparison method. Automated harness tests do not establish improved live-model output quality.
+
 ## Project files
 
 ```text
@@ -169,7 +204,7 @@ GPT Luna/Sol children use priority service when `fastMode` is true (project defa
 
 The extension is global at `~/.pi/agent/extensions/pi-workbench/`. Intent, workflow, research, and the goal file live in the project. Memory and cases live under the Pi agent directory, keyed by project.
 
-`workflow/current.json` is the sole complete workflow authority. Packet verification is structured verifier testimony, not host-attested proof that commands ran. See [`SECURITY.md`](SECURITY.md).
+`workflow/current.json` is the sole complete workflow authority. Packet verification combines the model's criterion assessment with native execution receipts. Child sessions and checks live privately under the Pi agent directory; research reports and ledgers are written under the project's configured research output directory. See [`SECURITY.md`](SECURITY.md).
 
 ## Remaining companions
 
@@ -183,7 +218,7 @@ bun run capabilities:check
 
 ## Development
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). From a recursive clone:
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [Testing the harness](docs/testing-harness.md). From a recursive clone:
 
 ```bash
 bun install --frozen-lockfile

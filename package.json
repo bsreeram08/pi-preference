@@ -1,7 +1,7 @@
 {
   "name": "pi-workbench",
   "version": "0.6.0",
-  "description": "Sreeram's preference-aware Pi workbench for planning, research, delegated implementation, verification, durable agent memory, and trusted skill evolution.",
+  "description": "Sreeram's personal Pi profile for planning, research, delegated implementation, recorded verification, and durable context.",
   "private": true,
   "type": "module",
   "author": "Sreeram Balamurugan",

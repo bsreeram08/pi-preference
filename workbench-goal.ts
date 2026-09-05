@@ -74,7 +74,7 @@ export function registerWorkbenchGoal(
 
   pi.on("before_agent_start", async (event, ctx) => {
     const goal = await readGoalFile(await fileFor(ctx.cwd));
-    if (!goal || goal.status === "complete") return;
+    if (!goal || goal.status !== "active") return;
     return {
       systemPrompt: `${event.systemPrompt}\n\nActive Workbench goal (${goal.status}):\n${goal.objective}\nWork only on this goal until it is complete, paused, or the user changes it. Do not invent extra reconnaissance steps.`,
     };

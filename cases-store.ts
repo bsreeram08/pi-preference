@@ -192,11 +192,14 @@ export class WorkbenchCaseStore {
       }
     }
     entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-    const needle = query?.trim().toLowerCase();
-    const filtered = needle
-      ? entries.filter((entry) => `${entry.intent} ${entry.action} ${entry.outcome} ${entry.gap ?? ""}`.toLowerCase().includes(needle))
-      : entries;
-    return filtered.slice(-Math.max(1, Math.min(limit, L1_LIMIT))).reverse();
+    const terms = [...new Set((query?.toLowerCase().match(/[a-z0-9_-]{3,}/g) ?? [])
+      .filter((term) => !["the", "and", "for", "this", "that", "with", "from", "please", "can", "you", "task", "fix"].includes(term)))].slice(0, 64);
+    const ranked = entries.map((entry) => {
+      const text = `${entry.intent} ${entry.action} ${entry.outcome} ${entry.gap ?? ""}`.toLowerCase();
+      return { entry, score: terms.filter((term) => text.includes(term)).length };
+    }).filter(({ score }) => !query?.trim() || score > 0)
+      .sort((a, b) => b.score - a.score || b.entry.createdAt.localeCompare(a.entry.createdAt));
+    return ranked.slice(0, Math.max(1, Math.min(limit, L1_LIMIT))).map(({ entry }) => entry);
   }
 
   async status(): Promise<{ count: number; failures: number; blocked: number }> {

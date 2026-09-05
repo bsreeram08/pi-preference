@@ -22,6 +22,7 @@ import { bashTouchesProtectedMemory, protectedMemoryPathAccess } from "./memory-
 import { bashMutatesWorkspace } from "./readonly-bash.ts";
 import { renderMemoryEntries } from "./memory.ts";
 import { fetchResearchUrl, searchResearchWeb } from "./research-tools.ts";
+import { registerVerificationTool } from "./verification-tool.ts";
 
 const MAX_OUTPUT = 48 * 1024;
 const BROWSER_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "research-browser.mjs");
@@ -102,6 +103,7 @@ export function bashTouchesProtectedAgentStorage(command: string, agentDir: stri
 }
 
 export default function piWorkbenchChildTools(pi: ExtensionAPI) {
+  registerVerificationTool(pi);
   const agentDir = getAgentDir();
   const agentId = workbenchAgentIdFromEnvironment("specialist");
   const memoryStores = new Map<string, WorkbenchMemoryStore>();
@@ -152,6 +154,12 @@ export default function piWorkbenchChildTools(pi: ExtensionAPI) {
     const roots = memoryStoreFor(ctx.cwd).roots;
     let blocked = false;
     const readOnly = process.env.PI_WORKBENCH_READ_ONLY === "1";
+    if (readOnly && event.toolName === "workbench_verify") {
+      const argv = (event.input as { argv?: unknown }).argv;
+      if (Array.isArray(argv) && bashMutatesWorkspace(argv.join(" "))) {
+        return { block: true, reason: "Verification checks cannot be used for edits, installs, or Git mutations." };
+      }
+    }
     if (readOnly && (isToolCallEventType("write", event) || isToolCallEventType("edit", event))) {
       return {
         block: true,

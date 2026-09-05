@@ -2,8 +2,14 @@
 
 ## Unreleased
 
+- Documented native verification smoke tests and a scratch-project focused workflow. Updated the README and support guidance for current execution evidence and explicitly separated the proposed research redesign from shipped behavior.
+
 - Rewrote the README as a product map of first-party Workbench: Coordinator, agents, session tools, cases vs memory, routing, and the replaced companions.
 - Removed `pi-subagents`, `@capyup/pi-goal`, `@juicesharp/rpiv-todo`, and `@juicesharp/rpiv-ask-user-question` from the approved capability inventory and listed them as runtime exclusions so leftover lock/`node_modules` copies still fail `capabilities:check`.
+- Added native `workbench_verify` process receipts with literal argv, exit/interrupt status, private output artifacts, and fingerprints covering dirty tracked/untracked code and initialized submodules. Workflow and council completion now require observed checks instead of accepting verifier text alone.
+- Made the focused workflow the default: combine requirements with planning, give the approved sequence directly to one implementer, then use one independent code reviewer and a separate verification agent. `workflowMode: "thorough"` preserves the longer sequence.
+- Supply isolated children with explicit repository instructions and selected skill content. Fixed substring-based UI skill matches, prompt-length routing inflation, irrelevant case injection, and paused goals remaining in the active prompt. Omit implementer self-assessments from independent code-review prompts.
+
 - Added first-party `workbench_todo`, `workbench_ask`, and `workbench_goal` (`/todos`, `/goals`, `/goals-set`, `/goals-clear`) so session lists, structured questions, and user-owned goals no longer need third-party packages.
 - Stopped rewriting external `subagent` tool calls; routing now tells children to use `delegate_task` and `workbench_agent_start` instead.
 - Read-only Workbench agents that receive `bash` now fail closed on ordinary workspace mutations (redirects, rm/mv/cp, git write verbs, package installs). This is a policy filter, not a sandbox.

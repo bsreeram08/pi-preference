@@ -48,6 +48,7 @@ import type {
   ResearchRun,
 } from "./research-types.ts";
 import { runAgentsParallel, runSingleAgent } from "./subagents.ts";
+import { guardSubagentLaunch } from "./project-trust.ts";
 import type { AgentSpec, Exec } from "./types.ts";
 
 const ISO = () => new Date().toISOString();
@@ -194,6 +195,8 @@ async function startResearch(
   supplied: StartResearchInput,
   signal?: AbortSignal,
 ): Promise<{ summary: string; run?: ResearchRun }> {
+  const trustRequired = guardSubagentLaunch(ctx);
+  if (trustRequired) return { summary: trustRequired };
   if (!ctx.hasUI) return { summary: "Deep research requires interactive or RPC UI for scope and cost confirmation." };
   const root = await findProjectRoot(ctx.cwd, deps.exec);
   const projectPaths = getProjectPaths(root);
@@ -485,6 +488,7 @@ async function addObservation(ctx: any, deps: ResearchRegistrationDependencies, 
 }
 
 async function synthesizeCurrent(ctx: any, deps: ResearchRegistrationDependencies): Promise<void> {
+  if (guardSubagentLaunch(ctx)) return;
   const current = await requireCurrentRun(ctx, deps);
   if (!current) return;
   const config = await loadConfig(current.projectPaths);
@@ -555,6 +559,7 @@ async function synthesizeCurrent(ctx: any, deps: ResearchRegistrationDependencie
 }
 
 async function auditCurrent(ctx: any, deps: ResearchRegistrationDependencies): Promise<void> {
+  if (guardSubagentLaunch(ctx)) return;
   const current = await requireCurrentRun(ctx, deps);
   if (!current) return;
   const config = await loadConfig(current.projectPaths);
